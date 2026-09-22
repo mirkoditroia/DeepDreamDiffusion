@@ -19,10 +19,27 @@ sys.version
 - An NVIDIA driver if you use CUDA. The installer does not install the driver.
   It installs a CUDA build of PyTorch inside this folder.
 
+## If you see “no compatible venv_td”
+
+The download does not include the Python environment. TouchDesigner shows
+that status until you create it once, in this folder.
+
+1. Double-click `Install.bat` here and wait until it finishes. You need
+   `py -3.11` and, for CUDA, an NVIDIA driver.
+2. Keep `DeepDreamLive.tox` in this folder when you drop it into a project.
+   If the component in the project no longer points at this file, turn on
+   **Use External Plugin Directory** and set **Plugin Directory** to this
+   folder.
+3. Cook the component again.
+
+The Status line prints the same PowerShell command when the environment is
+still missing.
+
 ## Install
 
 Clone or download this folder and leave `DeepDreamLive.tox` inside it. The
-component looks for `deepdream\` and `venv_td\` next to the TOX.
+component looks for `deepdream\` and `venv_td\` in this folder, including
+when the TOX path is a few folders deeper.
 
 1. In TouchDesigner, drag `DeepDreamLive.tox` into a network, or import it.
 2. Select the component and pulse **Show Install Command** on the Setup page.
