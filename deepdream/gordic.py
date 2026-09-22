@@ -1,11 +1,12 @@
 """Engine DeepDream fedele a gordicaleksa/pytorch-deepdream.
 
-Differenze chiave rispetto al tutorial TensorFlow (e dal nostro engine Inception):
-1. Loss = MSE delle attivazioni (media dei quadrati) -> amplificazione piu' forte.
-2. Smoothing gaussiano a cascata dei gradienti -> pattern lisci e "onirici".
-3. Jitter (shift circolare casuale) prima di ogni step -> niente artefatti.
-4. Image pyramid a ottave: ogni livello parte dalla foto e tiene solo il dettaglio nuovo.
-5. Backbone selezionabili: VGG16 (astratto) o GoogLeNet (cani/occhi).
+Come il DeepDream originale (Mordvintsev / caffe):
+1. Loss = media dei quadrati delle attivazioni.
+2. Il gradiente non viene sfocato: la sfocatura trasforma il cielo in curve
+   e l'animale in anelli magenta e verdi.
+3. Lo step divide il gradiente per la sua media assoluta e non gli toglie il colore.
+4. Ogni ottava parte dalla foto e tiene solo il dettaglio nuovo.
+5. Backbone selezionabili: VGG16 o GoogLeNet.
 """
 
 from __future__ import annotations
@@ -24,6 +25,10 @@ from .borders import empty_border_mask, restore_empty_border
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+# The panel's neutral Learning Rate is 0.09. The original DeepDream step is
+# 1.5 on a 0-255 image. The tensor here is ImageNet-normalized, so this scale
+# makes 0.09 equal that step. A larger step saturates into colored rings.
+_STEP_SCALE = (1.5 / 255.0) / float(IMAGENET_STD.mean()) / 0.09
 
 
 class CascadeGaussianSmoothing(nn.Module):
@@ -129,7 +134,6 @@ class _AscentGraph:
         self.static_support = torch.ones(
             (1, 1, height, width), device=device, dtype=torch.float32
         )
-        self.smoother = CascadeGaussianSmoothing(9, 1.0, device)
         self.graph = torch.cuda.CUDAGraph()
         self._capture()
 
@@ -143,10 +147,9 @@ class _AscentGraph:
             loss = self.dreamer._loss(self.static_x, self.static_support)
         (gradient,) = torch.autograd.grad(loss, self.static_x)
         with torch.no_grad():
-            smooth = self.smoother(gradient)
-            scaled = self.dreamer._scale_gradient(smooth, self.static_support)
+            scaled = self.dreamer._scale_gradient(gradient, self.static_support)
             updated = torch.clamp(
-                self.static_x.detach() + self.static_scale * scaled,
+                self.static_x.detach() + self.static_scale * _STEP_SCALE * scaled,
                 min=self.dreamer.lower_bound,
                 max=self.dreamer.upper_bound,
             )
@@ -169,12 +172,10 @@ class _AscentGraph:
         self,
         image: torch.Tensor,
         scale: float,
-        sigma: float,
+        _sigma: float,
         support: torch.Tensor | None,
     ) -> torch.Tensor:
-        kernel = self.dreamer._get_smoothing(sigma)
         with torch.no_grad():
-            self.smoother.weight.copy_(kernel.weight)
             self.static_scale.fill_(scale)
             self.static_x.copy_(image)
             if support is None:
@@ -317,10 +318,10 @@ class GordicDream:
     def _gradient_ascent_step(
         self,
         input_tensor: torch.Tensor,
-        iteration: int,
-        num_iterations: int,
+        _iteration: int,
+        _num_iterations: int,
         lr: float,
-        smoothing_coefficient: float,
+        _smoothing_coefficient: float,
         intensity: float = 1.0,
         support: torch.Tensor | None = None,
     ) -> None:
@@ -332,13 +333,10 @@ class GordicDream:
             loss = self._loss(input_tensor, support)
         loss.backward()
         grad = input_tensor.grad.detach()
-
-        sigma = ((iteration + 1) / num_iterations) * 2.0 + smoothing_coefficient
-        smooth_grad = self._get_smoothing(sigma)(grad)
-        smooth_grad = self._scale_gradient(smooth_grad, support)
+        scaled = self._scale_gradient(grad, support)
 
         with torch.no_grad():
-            input_tensor.add_(lr * intensity * smooth_grad)
+            input_tensor.add_(lr * intensity * _STEP_SCALE * scaled)
             input_tensor.clamp_(min=self.lower_bound, max=self.upper_bound)
         input_tensor.grad = None
 

@@ -86,13 +86,16 @@ toggle reports 0; the next cooks settle on the real rate.
 Each frame is normalized with ImageNet mean and standard deviation, then run
 through the chosen network up to one layer. The loss is the mean square of
 that layer's activations, measured on the picture and not on the empty border.
-The pixels are then stepped along the gradient. The gradient is smoothed and
-divided by its mean absolute value, then scaled by **Learning Rate** and
-**Intensity**. The average color of the gradient is left in place, so the
-patterns grow in the colors of the picture. That step repeats for
-**Iterations** at every **Pyramid** level. Each level starts from the picture
-at that size and keeps only the new detail, then carries the detail up toward
-Process Width (scale ratio 1.6). Large shapes and fine texture follow the image.
+The pixels are then stepped along the gradient. The gradient is not blurred:
+blurring it turns the sky into contour lines and the subject into rings of
+magenta and green. It is divided by its mean absolute value, and its average
+color is left in place, so the patterns grow in the colors of the picture.
+**Learning Rate** `0.09` matches the original DeepDream step. That step repeats
+for **Iterations** at every **Pyramid** level. Each level starts from the
+picture at that size and keeps only the new detail, then carries the detail up
+toward Process Width (scale ratio 1.6). The reference pictures from Google are
+GoogLeNet, deeper layers: animals and arches grow out of the scene, and the
+scene stays readable.
 
 The network stops at the layer you select. Deeper layers are not computed.
 
