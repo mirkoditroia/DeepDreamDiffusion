@@ -139,17 +139,17 @@ pyramid levels are not reduced to buy speed; they are the look.
 | Parameter | What it does |
 | --- | --- |
 | Model | VGG16, GoogLeNet, or VGG16 Experimental. Changing it applies the suggested layer, iterations, and pyramid. |
-| Layer Index | Which layer to amplify. See the table above. |
-| Process Width | Width of the image the network actually sees. This is the main speed control. The picture you see is still the video resolution. Start around 256, then move toward 512 or higher. |
-| Learning Rate | Size of each ascent step. Large values move fast and can clip. A practical start is `0.09`. |
-| Intensity | Scales the gradient after it is normalized. This is the direct strength control. `1.0` is a neutral start. |
-| Iterations | Ascent steps at each pyramid level. More steps means a stronger dream and a nearly linear cost. |
-| Pyramid Levels | How many scales are dreamed, from small to Process Width. More levels grow larger structures. |
+| Layer Index | Which layer to amplify. Slider 0 to 7. See the table above. |
+| Process Width | Width of the image the network actually sees. Slider 64 to 2048. The picture you see is still the video resolution. Start around 256, then move toward 512 or higher. |
+| Learning Rate | Size of each ascent step. Slider 0.01 to 0.25. Large values move fast and can clip. A practical start is `0.09`. |
+| Intensity | Scales the gradient after it is normalized. Slider 0 to 3. `1.0` is a neutral start. |
+| Iterations | Ascent steps at each pyramid level. Slider 1 to 20. More steps means a stronger dream and a nearly linear cost. |
+| Pyramid Levels | How many scales are dreamed, from small to Process Width. Slider 1 to 8. More levels grow larger structures. |
 | Temporal Blend | Mixes each new dream with the previous dream, from 0 to 1. Higher values flicker less. With Sync Frames off, the effect also eases onto newer video frames between GPU updates. |
 | Feedback | Feeds part of the previous dream back into the next input (0 to 0.95). This is the trip / infinite-tunnel amount. |
 | Feedback Zoom | Zooms the feedback image before it is reused. Try `0.01` with some Feedback. |
 | Feedback Rotate | Rotates the feedback image in degrees. Try `1` with some Feedback. |
-| Saturation | Color strength of the result. `1.2` is slightly vivid. |
+| Saturation | Color strength of the result. Slider 0 to 3. `1.2` is slightly vivid. |
 | Reset Feedback | Clears the temporal image. |
 | Sync Frames | On by default. Leaves Realtime and locks each video frame to its dream. Off keeps the project frame rate and updates the dream when the GPU finishes. |
 
