@@ -126,24 +126,32 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Could not create the virtual environment." }
     }
 
+    foreach ($name in @(
+        "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS",
+        "PIP_TRUSTED_HOST", "PIP_CONFIG_FILE"
+    )) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+    }
+
     Write-Log "Updating pip"
-    & $VenvPython -m pip install --upgrade pip
+    & $VenvPython -m pip install --isolated --disable-pip-version-check --upgrade pip
     if ($LASTEXITCODE -ne 0) { throw "Could not update pip." }
 
     if ($Device -eq "cuda") {
         Write-Log "Installing PyTorch with CUDA. This is the long step."
-        & $VenvPython -m pip install `
+        & $VenvPython -m pip install --isolated --disable-pip-version-check `
             "torch==2.11.0+cu128" `
             "torchvision==0.26.0+cu128" `
             --index-url $TorchIndex
     } else {
         Write-Log "Installing the CPU build of PyTorch."
-        & $VenvPython -m pip install torch torchvision
+        & $VenvPython -m pip install --isolated --disable-pip-version-check torch torchvision
     }
     if ($LASTEXITCODE -ne 0) { throw "Could not install PyTorch." }
 
     Write-Log "Installing OpenCV, NumPy, and Pillow"
-    & $VenvPython -m pip install opencv-contrib-python "numpy<2" "pillow>=10"
+    & $VenvPython -m pip install --isolated --disable-pip-version-check `
+        opencv-contrib-python "numpy<2" "pillow>=10"
     if ($LASTEXITCODE -ne 0) { throw "Could not install the remaining libraries." }
 
     & $VenvPython -c "import torch, cv2; print('torch', torch.__version__, 'CUDA', torch.cuda.is_available()); print('opencv', cv2.__version__)"
@@ -152,7 +160,7 @@ try {
     Set-Content -Path $Marker -Value $PythonVersion -NoNewline -Encoding ascii
     Write-Log "Installation complete."
     Write-Host ""
-    Write-Host "Installation complete. Cook the component in TouchDesigner." -ForegroundColor Green
+    Write-Host "Installation complete. In TouchDesigner, pulse Check Dependencies and turn Active on." -ForegroundColor Green
 }
 catch {
     Write-Log "Installation failed: $($_.Exception.Message)"
