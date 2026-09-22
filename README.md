@@ -53,9 +53,10 @@ Mask TOP  ──> input 1  (optional)
 ```
 
 The video input is resized to **Process Width** on the GPU, dreamed, then
-scaled back to the video resolution. A blur of the source is subtracted from
-the source and added back onto the upscaled dream, so the output keeps the
-video's fine detail while the dream stays at the smaller working size.
+scaled back to the video resolution. The upscaled dream is sharpened by about
+one dream pixel, then its difference from a blur of the picture is scaled by
+**Effect Contrast** and added to the original video. The photo's fine detail
+stays, and the dream can read more clearly without a larger Process Width.
 
 Flat near-black bars that touch the edge of the frame (letterbox or pillarbox)
 stay a copy of the source. Dark objects inside the picture are still dreamed.
@@ -150,6 +151,7 @@ pyramid levels are not reduced to buy speed; they are the look.
 | Feedback Zoom | Zooms the feedback image before it is reused. Try `0.01` with some Feedback. |
 | Feedback Rotate | Rotates the feedback image in degrees. Try `1` with some Feedback. |
 | Saturation | Color strength of the result. Slider 0 to 3. `1.2` is slightly vivid. |
+| Effect Contrast | Strength of the dream against the picture, applied at the video resolution. Slider 0 to 3. `1.2` is the start. `1` is the dream as calculated. `0` is the original video. Process Width does not have to go up for the effect to read more clearly. |
 | Reset Feedback | Clears the temporal image. |
 | Sync Frames | On by default. Leaves Realtime and locks each video frame to its dream. Off keeps the project frame rate and updates the dream when the GPU finishes. |
 
