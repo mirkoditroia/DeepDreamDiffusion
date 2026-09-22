@@ -41,14 +41,19 @@ def apply_feedback_transform(
     )
 
 
+def _flip_rows(arr: np.ndarray) -> np.ndarray:
+    """TouchDesigner stores row 0 at the bottom. ImageNet models use row 0 at the top."""
+    return np.ascontiguousarray(arr[::-1])
+
+
 def top_to_rgb01(arr: np.ndarray) -> np.ndarray:
-    """Converte numpy da TOP TD (H,W,3|4 float 0-1 o uint8) in RGB [0,1]."""
+    """Converte numpy da TOP TD (H,W,3|4 float 0-1 o uint8) in RGB [0,1] dall'alto."""
     if arr.dtype != np.float32 and arr.dtype != np.float64:
         arr = arr.astype(np.float32) / 255.0
     rgb = arr[..., :3].astype(np.float32, copy=False)
     if rgb.max() > 1.0:
         rgb = rgb / 255.0
-    return np.clip(rgb, 0.0, 1.0)
+    return _flip_rows(np.clip(rgb, 0.0, 1.0))
 
 
 def top_mask_to_01(arr: np.ndarray, source: str = "alpha") -> np.ndarray:
@@ -72,7 +77,7 @@ def top_mask_to_01(arr: np.ndarray, source: str = "alpha") -> np.ndarray:
             + arr[..., 1] * 0.7152
             + arr[..., 2] * 0.0722
         )
-    return np.clip(mask, 0.0, 1.0)[..., None]
+    return _flip_rows(np.clip(mask, 0.0, 1.0)[..., None])
 
 
 def composite_with_mask(
@@ -111,12 +116,12 @@ def composite_effect_delta(
 
 
 def rgb01_to_top_rgba(img01: np.ndarray, alpha: float = 1.0) -> np.ndarray:
-    """RGB [0,1] -> array TOP (H,W,4) float32."""
+    """RGB [0,1] dall'alto -> array TOP (H,W,4) float32, riga 0 in basso."""
     h, w = img01.shape[:2]
     out = np.ones((h, w, 4), dtype=np.float32)
     out[..., :3] = np.clip(img01, 0.0, 1.0)
     out[..., 3] = alpha
-    return out
+    return _flip_rows(out)
 
 
 def resize_rgb01(img01: np.ndarray, proc_width: int) -> np.ndarray:
