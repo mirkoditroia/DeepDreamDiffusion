@@ -124,6 +124,131 @@ def rgb01_to_top_rgba(img01: np.ndarray, alpha: float = 1.0) -> np.ndarray:
     return _flip_rows(out)
 
 
+_FLOW_WIDTH = 256
+
+
+def _motion_amount(current: np.ndarray, previous: np.ndarray) -> float:
+    """Mean absolute change on a tiny copy. A full-frame mean is slower than the flow."""
+    current_small = cv2.resize(current, (64, 36), interpolation=cv2.INTER_AREA)
+    previous_small = cv2.resize(previous, (64, 36), interpolation=cv2.INTER_AREA)
+    return float(np.mean(np.abs(current_small - previous_small)))
+
+
+def _gray_u8(img01: np.ndarray) -> np.ndarray:
+    rgb = img01[..., :3]
+    gray = rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+    return np.clip(gray * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+class TemporalTracker:
+    """Motion-compensated mix of the new dream with the previous one.
+
+    Optical flow runs on a small grayscale copy. Where the warp does not
+    match the picture, the new dream is kept, so a cut does not leave a ghost.
+    """
+
+    def __init__(self) -> None:
+        self._dis = None
+        self._guess: np.ndarray | None = None
+        self._grids: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+
+    def reset(self) -> None:
+        self._guess = None
+
+    def blend(
+        self,
+        current: np.ndarray,
+        previous: np.ndarray,
+        current_src: np.ndarray,
+        previous_src: np.ndarray,
+        amount: float,
+    ) -> np.ndarray:
+        if amount <= 0.0 or current.shape != previous.shape:
+            return current
+        if _motion_amount(current_src, previous_src) < 0.012:
+            self._guess = None
+            if amount >= 1.0:
+                return previous
+            return cv2.addWeighted(current, 1.0 - amount, previous, float(amount), 0.0)
+        warped, confidence = self._align(previous, current_src, previous_src)
+        weight = np.clip(amount * confidence, 0.0, 1.0)[..., None]
+        mixed = current * (1.0 - weight) + warped * weight
+        return np.clip(mixed, 0.0, 1.0).astype(np.float32, copy=False)
+
+    def _align(
+        self,
+        previous: np.ndarray,
+        current_src: np.ndarray,
+        previous_src: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        height, width = previous.shape[:2]
+        scale = max(width, height) / _FLOW_WIDTH
+        if scale < 1.0:
+            scale = 1.0
+        small_w = max(8, int(round(width / scale)))
+        small_h = max(8, int(round(height / scale)))
+        prev_small = cv2.resize(
+            previous_src, (small_w, small_h), interpolation=cv2.INTER_AREA
+        )
+        curr_small = cv2.resize(
+            current_src, (small_w, small_h), interpolation=cv2.INTER_AREA
+        )
+        # Backward flow: for each current pixel, where it came from in the previous frame.
+        flow = self._flow(_gray_u8(curr_small), _gray_u8(prev_small))
+        if flow is None:
+            level = max(0.0, 1.0 - _motion_amount(current_src, previous_src) / 0.2)
+            return previous, np.full((height, width), level, dtype=np.float32)
+        warped_src = self._remap(prev_small, flow)
+        err = np.mean(np.abs(warped_src - curr_small), axis=2)
+        confidence = np.clip(1.0 - err / 0.18, 0.0, 1.0).astype(np.float32)
+        confidence = cv2.GaussianBlur(confidence, (0, 0), 1.2)
+        if (small_h, small_w) != (height, width):
+            confidence = cv2.resize(
+                confidence, (width, height), interpolation=cv2.INTER_LINEAR
+            )
+            flow = cv2.resize(flow, (width, height), interpolation=cv2.INTER_LINEAR)
+            flow[..., 0] *= width / small_w
+            flow[..., 1] *= height / small_h
+        return self._remap(previous, flow), confidence
+
+    def _flow(self, previous: np.ndarray, current: np.ndarray) -> np.ndarray | None:
+        if self._dis is None:
+            create = getattr(cv2, "DISOpticalFlow_create", None)
+            if create is None:
+                return None
+            preset = getattr(cv2, "DISOPTICAL_FLOW_PRESET_ULTRAFAST", 0)
+            self._dis = create(preset)
+            if hasattr(self._dis, "setFinestScale"):
+                self._dis.setFinestScale(2)
+            if hasattr(self._dis, "setUseSpatialPropagation"):
+                self._dis.setUseSpatialPropagation(True)
+        guess = self._guess
+        if guess is not None and guess.shape[:2] != previous.shape[:2]:
+            guess = None
+        flow = self._dis.calc(previous, current, guess)
+        self._guess = flow
+        return flow
+
+    def _remap(self, img: np.ndarray, flow: np.ndarray) -> np.ndarray:
+        height, width = img.shape[:2]
+        cached = self._grids.get((height, width))
+        if cached is None:
+            grid_x, grid_y = np.meshgrid(
+                np.arange(width, dtype=np.float32),
+                np.arange(height, dtype=np.float32),
+            )
+            cached = (grid_x, grid_y)
+            self._grids[(height, width)] = cached
+        grid_x, grid_y = cached
+        return cv2.remap(
+            img,
+            grid_x + flow[..., 0],
+            grid_y + flow[..., 1],
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+
+
 def resize_rgb01(img01: np.ndarray, proc_width: int) -> np.ndarray:
     h, w = img01.shape[:2]
     if w <= proc_width:
@@ -172,6 +297,8 @@ class LiveDreamEngine:
         self.status = "Ready"
         self._failed_config: tuple | None = None
         self.last_dream01: np.ndarray | None = None
+        self.last_clean01: np.ndarray | None = None
+        self._temporal = TemporalTracker()
 
     def set_model(self, model_name: str, layer: str | None = None) -> None:
         if model_name not in BACKBONE_LAYERS:
@@ -199,6 +326,8 @@ class LiveDreamEngine:
 
     def reset_feedback(self) -> None:
         self.last_dream01 = None
+        self.last_clean01 = None
+        self._temporal.reset()
 
     def load_model_now(self, layer: str) -> str | None:
         """Load the active model on this thread. The GPU worker uses this so
@@ -340,18 +469,29 @@ class LiveDreamEngine:
                 )
             return img01
 
-        if controls.blend > 0.0 and previous_dream is not None:
-            if previous_dream.shape == dreamed01.shape:
-                dreamed01 = (
-                    (1.0 - controls.blend) * dreamed01
-                    + controls.blend * previous_dream
-                )
+        if (
+            controls.blend > 0.0
+            and previous_dream is not None
+            and self.last_clean01 is not None
+            and previous_dream.shape == dreamed01.shape
+            and self.last_clean01.shape == clean01.shape
+        ):
+            dreamed01 = self._temporal.blend(
+                dreamed01,
+                previous_dream,
+                clean01,
+                self.last_clean01,
+                float(controls.blend),
+            )
+        else:
+            self._temporal.reset()
 
-        dreamed01 = enhance_saturation(dreamed01, controls.saturation)
         from .gordic import restore_empty_border
 
         dreamed01 = restore_empty_border(clean01, dreamed01)
-        self.last_dream01 = dreamed01.copy()
+        self.last_dream01 = np.ascontiguousarray(dreamed01)
+        self.last_clean01 = np.ascontiguousarray(clean01)
+        dreamed01 = enhance_saturation(dreamed01, controls.saturation)
         self._failed_config = None
         self.status = f"OK | {self.model_name} | {layer}"
         return dreamed01
@@ -759,15 +899,19 @@ class AsyncLiveDreamEngine:
             and self._sync_start is not None
             and self._sync_progress < 1.0
         ):
-            if cook_fps > 0.0 and self.dream_fps > 0.0:
-                bridge_frames = max(
-                    1, int(round(cook_fps / self.dream_fps))
-                )
+            jump = float(np.mean(np.abs(self._sync_target - self._sync_start)))
+            if jump >= 0.12:
+                self._sync_progress = 1.0
             else:
-                bridge_frames = 4
-            self._sync_progress = min(
-                1.0, self._sync_progress + 1.0 / bridge_frames
-            )
+                if cook_fps > 0.0 and self.dream_fps > 0.0:
+                    bridge_frames = max(
+                        1, int(round(cook_fps / self.dream_fps))
+                    )
+                else:
+                    bridge_frames = 4
+                self._sync_progress = min(
+                    1.0, self._sync_progress + 1.0 / bridge_frames
+                )
             amount = self._sync_progress
             self._sync_effect = (
                 self._sync_start * (1.0 - amount)

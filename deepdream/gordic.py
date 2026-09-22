@@ -79,6 +79,21 @@ def _hold_void(
     return tensor * support + source * (1.0 - support)
 
 
+def _jitter_shift(level: int, step: int, radius: int) -> tuple[int, int]:
+    """Same shift for the same step on every frame.
+
+    A fresh random roll each frame moves the dream even when the picture
+    does not, which is the flicker a temporal blend cannot fully hide.
+    """
+    if radius <= 0:
+        return 0, 0
+    n = (level + 1) * 131 + (step + 1)
+    span = radius * 2 + 1
+    h = (n * 1103515245 + 12345) & 0x7FFFFFFF
+    w = (h * 1103515245 + 12345) & 0x7FFFFFFF
+    return (h % span) - radius, (w % span) - radius
+
+
 def _random_circular_shift(
     tensor: torch.Tensor, h_shift: int, w_shift: int, undo: bool = False
 ) -> torch.Tensor:
@@ -417,8 +432,8 @@ class GordicDream:
             )
 
             for it in range(num_iterations):
-                h_shift, w_shift = np.random.randint(
-                    -spatial_shift_size, spatial_shift_size + 1, 2
+                h_shift, w_shift = _jitter_shift(
+                    level, it, spatial_shift_size
                 )
                 sigma = (
                     (it + 1) / num_iterations
