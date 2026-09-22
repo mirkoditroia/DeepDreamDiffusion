@@ -87,10 +87,12 @@ Each frame is normalized with ImageNet mean and standard deviation, then run
 through the chosen network up to one layer. The loss is the mean square of
 that layer's activations, measured on the picture and not on the empty border.
 The pixels are then stepped along the gradient. The gradient is smoothed and
-scaled by **Learning Rate** and **Intensity**. That step repeats for
-**Iterations** at every **Pyramid** level. The pyramid starts smaller and
-grows toward Process Width (scale ratio 1.6), so large shapes and fine
-texture build together.
+divided by its mean absolute value, then scaled by **Learning Rate** and
+**Intensity**. The average color of the gradient is left in place, so the
+patterns grow in the colors of the picture. That step repeats for
+**Iterations** at every **Pyramid** level. Each level starts from the picture
+at that size and keeps only the new detail, then carries the detail up toward
+Process Width (scale ratio 1.6). Large shapes and fine texture follow the image.
 
 The network stops at the layer you select. Deeper layers are not computed.
 

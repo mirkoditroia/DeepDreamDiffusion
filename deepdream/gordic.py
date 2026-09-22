@@ -4,7 +4,7 @@ Differenze chiave rispetto al tutorial TensorFlow (e dal nostro engine Inception
 1. Loss = MSE delle attivazioni (media dei quadrati) -> amplificazione piu' forte.
 2. Smoothing gaussiano a cascata dei gradienti -> pattern lisci e "onirici".
 3. Jitter (shift circolare casuale) prima di ogni step -> niente artefatti.
-4. Image pyramid (pyramid_size / pyramid_ratio) invece delle ottave classiche.
+4. Image pyramid a ottave: ogni livello parte dalla foto e tiene solo il dettaglio nuovo.
 5. Backbone selezionabili: VGG16 (astratto) o GoogLeNet (cani/occhi).
 """
 
@@ -298,19 +298,21 @@ class GordicDream:
     def _scale_gradient(
         self, grad: torch.Tensor, support: torch.Tensor | None
     ) -> torch.Tensor:
-        if support is None:
-            g_std, g_mean = torch.std_mean(grad)
-            return (grad - g_mean) / (g_std + 1e-8)
+        """Divide by the mean absolute value, as in the original DeepDream step.
 
-        # Media e deviazione solo sui pixel della picture. Sottrarre la media
-        # sull'intero frame assegnava uno step pieno anche dove il gradiente
-        # era zero: e' questo che dipinge le bande nere come un filtro.
+        Removing the average of the gradient forces every new feature to be paid
+        for with the opposite color. That paints the frame as a magenta and
+        green filter. The empty border is multiplied by its support, so a zero
+        gradient there stays zero and is not stepped.
+        """
+        if support is None:
+            scale = grad.abs().mean().clamp_min(1e-8)
+            return grad / scale
+
         weight = support
         count = (weight.sum() * grad.shape[1]).clamp_min(1.0)
-        g_mean = (grad * weight).sum() / count
-        centered = (grad - g_mean) * weight
-        variance = centered.square().sum() / (count - 1.0).clamp_min(1.0)
-        return centered / (variance.sqrt() + 1e-8)
+        scale = (grad.abs() * weight).sum() / count
+        return (grad * weight) / scale.clamp_min(1e-8)
 
     def _gradient_ascent_step(
         self,
@@ -395,18 +397,32 @@ class GordicDream:
             )
             guide_norm = (guide_tensor - self.mean) / self.std
 
+        # Each octave starts from the picture at that size, plus only the detail
+        # discovered on the smaller octave. Upscaling the dreamed frame itself
+        # throws the picture away and grows a new pattern on top of the last one.
+        original = tensor.detach()
+        detail: torch.Tensor | None = None
         for level in range(pyramid_size):
             exponent = level - pyramid_size + 1
             scale = pyramid_ratio ** exponent
             new_h = max(1, int(round(base_h * scale)))
             new_w = max(1, int(round(base_w * scale)))
             with torch.no_grad():
-                tensor = F.interpolate(
-                    tensor.detach(),
+                base = F.interpolate(
+                    original,
                     size=(new_h, new_w),
                     mode="bilinear",
                     align_corners=False,
                 )
+                if detail is None:
+                    tensor = base
+                else:
+                    tensor = base + F.interpolate(
+                        detail,
+                        size=(new_h, new_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
                 support_level = None
                 source_level = None
                 if support_base is not None and guide_norm is not None:
@@ -424,6 +440,8 @@ class GordicDream:
                     tensor = tensor.contiguous(
                         memory_format=torch.channels_last
                     )
+                    base = base.contiguous(memory_format=torch.channels_last)
+            base_level = base.detach()
             tensor.requires_grad_(True)
             graph = (
                 self._get_ascent_graph(new_h, new_w)
@@ -501,6 +519,10 @@ class GordicDream:
                         tensor = held.requires_grad_(True)
                 if progress is not None:
                     progress(level, it)
+            with torch.no_grad():
+                detail = tensor.detach() - base_level
+                if support_level is not None:
+                    detail = detail * support_level
 
         with torch.no_grad():
             output = (
