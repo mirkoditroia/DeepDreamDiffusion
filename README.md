@@ -89,13 +89,12 @@ that layer's activations, measured on the picture and not on the empty border.
 The pixels are then stepped along the gradient. The gradient is not blurred:
 blurring it turns the sky into contour lines and the subject into rings of
 magenta and green. It is divided by its mean absolute value, and its average
-color is left in place, so the patterns grow in the colors of the picture.
-**Learning Rate** `0.09` matches the original DeepDream step. That step repeats
+color is left in place. Subtracting that average paints the whole frame as a
+magenta and green filter, so the step does not do it. **Learning Rate** `0.09`
+matches the original DeepDream step of 1.5 on a 0–255 image. That step repeats
 for **Iterations** at every **Pyramid** level. Each level starts from the
 picture at that size and keeps only the new detail, then carries the detail up
-toward Process Width (scale ratio 1.6). The reference pictures from Google are
-GoogLeNet, deeper layers: animals and arches grow out of the scene, and the
-scene stays readable.
+toward Process Width (scale ratio 1.6).
 
 The network stops at the layer you select. Deeper layers are not computed.
 
@@ -104,27 +103,89 @@ owns PyTorch and replays the ascent as a CUDA graph. TouchDesigner only copies
 frames. Capturing those graphs inside TouchDesigner takes the application
 down, so they stay in the worker.
 
-Changing **Model** loads the recommended layer, iterations, and pyramid.
-Models already used in the session stay loaded in the GPU process.
+Changing **Model** loads a default layer, iterations, and pyramid. Those
+defaults are a starting point. Models already used in the session stay loaded
+in the GPU process.
 
-| Model | What it tends to do | Layers, shallow to deep | Suggested start |
-| --- | --- | --- | --- |
-| VGG16 | Vivid, painterly patterns. The source usually stays readable. | `relu1_2`, `relu2_2`, `relu3_3`, `relu4_3` | Layer 2, 3 iterations, 3 pyramid levels |
-| VGG16 Experimental | Denser, less predictable texture. More layers to choose from. | `relu3_3`, `relu4_1`, `relu4_2`, `relu4_3`, `relu5_1`, `relu5_2`, `relu5_3`, `mp5` | Layer 1, 4 iterations, 2 pyramid levels |
-| GoogLeNet | The classic DeepDream look: eyes, faces, animal-like forms. | `inception3b`, `inception4c`, `inception4d`, `inception4e` | Layer 3, 3 iterations, 3 pyramid levels |
+| Model | What choosing it sets | Layers, shallow to deep |
+| --- | --- | --- |
+| VGG16 | Layer 2, 3 iterations, 3 pyramid levels | `relu1_2`, `relu2_2`, `relu3_3`, `relu4_3` |
+| GoogLeNet | Layer 3, 3 iterations, 3 pyramid levels | `inception3b`, `inception4c`, `inception4d`, `inception4e` |
+| VGG16 Experimental | Layer 1, 4 iterations, 2 pyramid levels | `relu3_3`, `relu4_1`, `relu4_2`, `relu4_3`, `relu5_1`, `relu5_2`, `relu5_3`, `mp5` |
 
 **Layer Index** picks a row from that list. An index past the last layer wraps
-around. Early layers are mostly edges and texture. Middle VGG layers
-(`relu3_3`, `relu4_*`) are the familiar painted look. The deepest
-Experimental layers and GoogLeNet `inception4e` build larger, more figurative
-shapes.
+around.
 
-On an RTX 5070 Ti Laptop, 4 iterations, 2 pyramid levels, and Process Width
-800, one dream was about 15 fps at VGG16 `relu3_3`, 13 fps at VGG16 `relu4_3`,
-13 fps at VGG16 Experimental `relu4_2`, 12 fps at `mp5`, 27 fps at GoogLeNet
-`inception3b`, and 20 fps at `inception4e`. The same Experimental `relu4_2`
-recipe at 7 iterations and 4 pyramid levels was about 7 fps. Iterations and
-pyramid levels are not reduced to buy speed; they are the look.
+## What each model does live
+
+Read from live frames, Sync Frames on, Feedback at 0, Temporal Blend about
+`0.48`, Effect Contrast `1.2`, Saturation `1.2`. Process Width was about
+550–700, with 4 iterations and 5 or 6 pyramid levels. On an RTX 5070 Ti
+Laptop that cook stayed between about 11 and 19 fps.
+
+| Model | Layer | What you see |
+| --- | --- | --- |
+| VGG16 | 0 `relu1_2` | A color-edge filter. Magenta and cyan sit on the contours. The face stays a photograph. |
+| VGG16 | 1 `relu2_2` | The person stays recognizable. The background turns into painted curves. This is the setting where the scene holds. |
+| VGG16 | 2 `relu3_3` | The live dream. The person becomes an animal and the clothes fill with eyes. About 13 fps at width 700. This is the VGG16 default. |
+| VGG16 | 3 `relu4_3` | The same direction, stronger. After a few seconds of Temporal Blend the person is gone. About 11 fps. |
+| GoogLeNet | 0–3, including 1 `inception4c` | The photograph stays, covered in colored grain: green, magenta, cyan. A wider Process Width, more iterations, or more pyramid levels makes that grain denser. It does not turn into animals or arches. About 11 fps at width 600. |
+| VGG16 Experimental | 1 `relu4_1` | Eyes grow on the face and replace it. About 19 fps at width 570. This is the Experimental default. |
+| VGG16 Experimental | 2 `relu4_2` | A field of eyes, with random green and magenta on top of them. |
+
+The stills in a Google image search are a different recipe: Inception v3 and
+many small steps. One still of that recipe took about 8 seconds. It does not
+fit in a live frame, so it is not in this component. Even that still kept
+scattered green and magenta. The live dream that actually draws figures is
+VGG16 from layer 2 up, and VGG16 Experimental. The subject disappears. GoogLeNet
+live stays a grain filter.
+
+On the same GPU, a lighter cook (4 iterations, 2 pyramid levels, Process Width
+800) measured about 15 fps at VGG16 `relu3_3`, 13 fps at `relu4_3`, 13 fps at
+VGG16 Experimental `relu4_2`, 12 fps at `mp5`, 27 fps at GoogLeNet
+`inception3b`, and 20 fps at `inception4e`. Seven iterations and 4 pyramid
+levels at Experimental `relu4_2` was about 7 fps. Iterations and pyramid levels
+are the look; they are not reduced to buy speed.
+
+## How to use it
+
+**Keep the person in the picture.** VGG16, layer 1. Learning Rate `0.06`–`0.09`,
+Intensity about `1.2`, Iterations 4, Pyramid 4–6, Process Width 500–700.
+Temporal Blend `0.3`–`0.5`. If the face starts to melt, lower Temporal Blend
+or pulse **Reset Feedback**.
+
+**Animals, eyes, swirls.** VGG16 layer 2 or 3, or VGG16 Experimental layer 1.
+Width 550–700, Iterations 4, Pyramid 5–6, Learning Rate `0.06`–`0.14`,
+Intensity about `1.2`. Temporal Blend near `0.5` builds the dream across
+frames. At about six seconds a face can be fully an animal. Pulse **Reset
+Feedback** to clear it.
+
+Feedback at `0` dreams the current picture every frame. Temporal Blend only
+mixes dreams that are already finished, after the previous one has been moved
+to follow the picture. Raising Feedback sends the previous dream back into the
+network, and the effect runs away faster. A visible tunnel is Zoom `0.01`,
+Rotate `1`, Feedback `0.4`, Temporal Blend `0.25`.
+
+**Process Width** decides how many patterns fit, not how sharp one pattern is.
+The filters have a fixed size in pixels, so a wider canvas holds more eyes,
+not a larger copy of one eye. The output is always the video resolution. Fine
+detail from the video is put back on top of the upscaled dream.
+
+**Effect Contrast** scales the dream against the video. `0` is the original
+video. `1` is the dream as calculated. `1.2` is a little stronger. It does not
+create figures. **Saturation** `1.2` makes the result more vivid, and it also
+makes green and magenta specks louder.
+
+**Learning Rate** `0.09` is the original DeepDream step. **Intensity**
+multiplies that step. `0.14` with Intensity `1.4` is about twice the original
+step. On VGG that pushes the animal. On GoogLeNet it pushes the grain.
+
+**Sync Frames** on makes the project wait, so the movie and the dream stay
+together. Off keeps the project frame rate and lets the dream trail the video.
+
+For a first cook, before any of the looks above: Process Width 256, one
+pyramid level, two iterations, Intensity `1.0`, Learning Rate `0.09`. When
+that cooks, move to the setting you want and raise Process Width.
 
 ## Parameters
 
@@ -144,7 +205,7 @@ pyramid levels are not reduced to buy speed; they are the look.
 
 | Parameter | What it does |
 | --- | --- |
-| Model | VGG16, GoogLeNet, or VGG16 Experimental. Changing it applies the suggested layer, iterations, and pyramid. |
+| Model | VGG16, GoogLeNet, or VGG16 Experimental. Changing it applies that model's default layer, iterations, and pyramid. |
 | Layer Index | Which layer to amplify. Slider 0 to 7. See the table above. |
 | Process Width | Width of the image the network actually sees. Slider 64 to 2048. The picture you see is still the video resolution. Start around 256, then move toward 512 or higher. |
 | Learning Rate | Size of each ascent step. Slider 0.01 to 0.25. Large values move fast and can clip. A practical start is `0.09`. |
@@ -164,8 +225,8 @@ A visible feedback starting point: Zoom `0.01`, Rotate `1`, Feedback `0.4`,
 Temporal Blend `0.25`, with Sync Frames off so the project keeps running.
 
 For a first cook, use Process Width 256, one pyramid level, two iterations,
-Intensity `1.0`, and Learning Rate `0.09`. When that is stable, switch to the
-suggested settings for the model and raise Process Width.
+Intensity `1.0`, and Learning Rate `0.09`. When that is stable, move to the
+look in **How to use it** and raise Process Width.
 
 ## If something fails
 
