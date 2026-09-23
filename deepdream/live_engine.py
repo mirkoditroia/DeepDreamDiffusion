@@ -557,7 +557,7 @@ class AsyncLiveDreamEngine:
             else:
                 self.status = self._bridge.status
                 print(
-                    "[DeepDreamLive] Calcolo sulla GPU in un processo separato. "
+                    "[DeepDream Diffusion] Calcolo sulla GPU in un processo separato. "
                     "Iterazioni e piramidi restano quelle del pannello; "
                     "il video continua a cucinare per conto suo."
                 )
