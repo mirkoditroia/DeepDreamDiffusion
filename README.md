@@ -196,37 +196,37 @@ that cooks, move to the setting you want and raise Process Width.
 
 ## Offline render
 
-**Offline Render** is off by default. Off is the live dream, with the controls
-described above. Nothing in that path changes.
+**Offline Render** is off by default. While it is off, its controls are not on
+the page. The live dream is the one described above.
 
-Turn **Offline Render** on and a second set of controls appears, plus
-**Render**. The live dream pauses and the video passes through, so the GPU is
-free. Pulse **Render**. A terminal window opens and prints each octave and
-step. Leave it open until it says the file is saved.
+Turn it on and Render Width, Steps, Octaves, Octave Scale, Step Size, Look,
+Output File, and **Render** are added under the toggle. The live dream pauses
+and the video passes through, so the GPU is free. Turn it off and those
+controls leave the page.
 
-This render uses Inception v3 and the published DeepDream still recipe: small
-steps, several octaves, and a gradient scaled by its standard deviation. It is
-not the live VGG or GoogLeNet cook. A still at the default settings takes
-about a minute. Raise Steps or Render Width and it takes longer. **Whole
-Movie** does that once per frame, so a clip can take a long time. The window
-prints how long is left.
+Connect a Movie File In, then pulse **Render**. A terminal window opens and
+prints each frame. The result is an MP4 of that movie: every frame, at the
+movie's own frame rate, so a 10 second input is a 10 second file. If **Output
+File** is empty, it is written in a `renders` folder next to this TOX. When
+ffmpeg is available, the original audio is copied into that MP4.
 
-The file is a PNG for the current frame, or an MP4 for the movie. If **Output
-File** is empty, it is written in a `renders` folder next to this TOX. A mask
-on the second input is respected.
+This render uses Inception v3 and the published DeepDream still recipe. It
+does not use the live model. Each frame takes about a minute at the default
+settings, so a clip takes one minute times its frame count. The window prints
+how long is left. Raise Steps toward 50 or 100 and the figures cover the
+picture. A mask on the second input is kept.
 
 | Control | What it does |
 | --- | --- |
-| Offline Render | Off is live. On shows these controls and pauses the live dream. |
+| Offline Render | Off is live, and these controls are absent. On adds them and pauses the live dream. |
 | Render Width | Width Inception sees. Slider 256 to 2048. Default 960. Higher is slower and finer. |
-| Steps | Ascent steps on every octave. Slider 8 to 200. Default 20 keeps the picture and grows figures in it. 50 to 100 covers the picture, which is the published still. |
+| Steps | Ascent steps on every octave. Slider 8 to 200. Default 20 keeps the picture and grows figures in it. 50 to 100 covers the picture. |
 | Octaves | Scales from small shapes up to Render Width. Slider 2 to 8. Default 4. |
 | Octave Scale | Size change between octaves. Slider 1.15 to 1.6. Default 1.3. |
 | Step Size | Step after the gradient is normalized. Slider 0.004 to 0.03. Default 0.01. Higher values speckle sooner. |
 | Look | Classic is the published layer pair. Deep grows denser figures. Fine follows larger shapes. |
-| Render Source | Current Frame, or every frame of a Movie File In on the video input. |
-| Output File | Empty saves next to the TOX. A folder path is filled in with a file name. |
-| Render | Opens the terminal and starts the file. |
+| Output File | MP4 path. Empty saves next to the TOX. The length matches the Movie File In. |
+| Render | Opens the terminal and writes the MP4. |
 
 ## Parameters
 

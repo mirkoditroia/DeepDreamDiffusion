@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -320,11 +322,21 @@ def render_movie(args, model: _InceptionFeatures) -> None:
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
     if fps <= 1.0:
+        fps = float(getattr(args, "fps", 0.0) or 0.0)
+    if fps <= 1.0:
         fps = 24.0
+    if frame_count > 0:
+        say(
+            f"Source {frame_count} frames at {fps:.3f} fps "
+            f"({frame_count / fps:.2f} s). The MP4 keeps that length."
+        )
+    else:
+        say(f"Source frame rate {fps:.3f} fps. The MP4 keeps that rate.")
     output = Path(args.output)
+    if output.suffix.lower() != ".mp4":
+        output = output.with_suffix(".mp4")
     output.parent.mkdir(parents=True, exist_ok=True)
     writer = None
-    sequence_dir = None
     processed = 0
     started = time.perf_counter()
     try:
@@ -366,7 +378,7 @@ def render_movie(args, model: _InceptionFeatures) -> None:
                 np.clip(dream * 255.0, 0, 255).astype(np.uint8),
                 cv2.COLOR_RGB2BGR,
             )
-            if writer is None and sequence_dir is None:
+            if writer is None:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                 candidate = cv2.VideoWriter(
                     str(output),
@@ -374,18 +386,12 @@ def render_movie(args, model: _InceptionFeatures) -> None:
                     fps,
                     (bgr.shape[1], bgr.shape[0]),
                 )
-                if candidate.isOpened():
-                    writer = candidate
-                    say(f"Writing {output} at {fps:.3f} fps")
-                else:
+                if not candidate.isOpened():
                     candidate.release()
-                    sequence_dir = output.with_suffix("")
-                    sequence_dir.mkdir(parents=True, exist_ok=True)
-                    say(f"The MP4 encoder did not open. Writing frames in {sequence_dir}")
-            if writer is not None:
-                writer.write(bgr)
-            else:
-                _write_rgb(sequence_dir / f"{processed:06d}.png", dream)
+                    raise RuntimeError(f"Could not open an MP4 writer for {output}")
+                writer = candidate
+                say(f"Writing {output} at {fps:.3f} fps")
+            writer.write(bgr)
             elapsed = time.perf_counter() - started
             if frame_count > 0 and processed > 0:
                 left = elapsed / processed * max(0, frame_count - processed)
@@ -399,8 +405,53 @@ def render_movie(args, model: _InceptionFeatures) -> None:
             writer.release()
     if processed == 0:
         raise RuntimeError(f"The movie has no frames: {source}")
-    say(f"Saved {sequence_dir or output}")
-    say(f"Done. {processed} frames in {time.perf_counter() - started:.1f} s")
+    _copy_source_audio(output, source)
+    seconds = processed / fps if fps > 0 else 0.0
+    say(f"Saved {output}")
+    say(
+        f"Done. {processed} frames at {fps:.3f} fps "
+        f"({seconds:.2f} s) in {time.perf_counter() - started:.1f} s"
+    )
+
+
+def _copy_source_audio(video_out: Path, source: Path) -> None:
+    """Keep the original soundtrack when ffmpeg can read it."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        say("The MP4 is the picture only. ffmpeg is not installed, so the original audio stays out.")
+        return
+    temp = video_out.with_name(video_out.stem + "_picture.mp4")
+    video_out.replace(temp)
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(temp),
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(video_out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0 or not video_out.is_file():
+        if video_out.exists():
+            video_out.unlink()
+        temp.replace(video_out)
+        say("The MP4 is the picture only. The source file has no audio track to copy.")
+        return
+    temp.unlink(missing_ok=True)
+    say("The original audio is in the MP4.")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -409,13 +460,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--movie", default="")
     parser.add_argument("--output", required=True)
     parser.add_argument("--width", type=int, default=960)
-    parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--octaves", type=int, default=4)
     parser.add_argument("--scale", type=float, default=1.3)
     parser.add_argument("--step-size", type=float, default=0.01)
     parser.add_argument("--look", choices=tuple(LOOKS), default="classic")
     parser.add_argument("--mask", default="")
     parser.add_argument("--mask-channel", choices=("alpha", "luminance"), default="alpha")
+    parser.add_argument("--fps", type=float, default=0.0)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--lock", default="")
     args = parser.parse_args(argv)
