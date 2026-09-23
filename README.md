@@ -194,6 +194,40 @@ For a first cook, before any of the looks above: Process Width 256, one
 pyramid level, two iterations, Intensity `1.0`, Learning Rate `0.09`. When
 that cooks, move to the setting you want and raise Process Width.
 
+## Offline render
+
+**Offline Render** is off by default. Off is the live dream, with the controls
+described above. Nothing in that path changes.
+
+Turn **Offline Render** on and a second set of controls appears, plus
+**Render**. The live dream pauses and the video passes through, so the GPU is
+free. Pulse **Render**. A terminal window opens and prints each octave and
+step. Leave it open until it says the file is saved.
+
+This render uses Inception v3 and the published DeepDream still recipe: small
+steps, several octaves, and a gradient scaled by its standard deviation. It is
+not the live VGG or GoogLeNet cook. A still at the default settings takes
+about a minute. Raise Steps or Render Width and it takes longer. **Whole
+Movie** does that once per frame, so a clip can take a long time. The window
+prints how long is left.
+
+The file is a PNG for the current frame, or an MP4 for the movie. If **Output
+File** is empty, it is written in a `renders` folder next to this TOX. A mask
+on the second input is respected.
+
+| Control | What it does |
+| --- | --- |
+| Offline Render | Off is live. On shows these controls and pauses the live dream. |
+| Render Width | Width Inception sees. Slider 256 to 2048. Default 960. Higher is slower and finer. |
+| Steps | Ascent steps on every octave. Slider 8 to 200. Default 20 keeps the picture and grows figures in it. 50 to 100 covers the picture, which is the published still. |
+| Octaves | Scales from small shapes up to Render Width. Slider 2 to 8. Default 4. |
+| Octave Scale | Size change between octaves. Slider 1.15 to 1.6. Default 1.3. |
+| Step Size | Step after the gradient is normalized. Slider 0.004 to 0.03. Default 0.01. Higher values speckle sooner. |
+| Look | Classic is the published layer pair. Deep grows denser figures. Fine follows larger shapes. |
+| Render Source | Current Frame, or every frame of a Movie File In on the video input. |
+| Output File | Empty saves next to the TOX. A folder path is filled in with a file name. |
+| Render | Opens the terminal and starts the file. |
+
 ## Parameters
 
 ### Setup

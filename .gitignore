@@ -5,3 +5,4 @@ __pycache__/
 .env.*
 install_log.txt
 install.lock
+renders/
