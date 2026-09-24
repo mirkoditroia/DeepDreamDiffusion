@@ -203,7 +203,7 @@ that cooks, move to the setting you want and raise Process Width.
 **Offline Render** is off by default. While it is off, its controls are not on
 the page. The live dream is the one described above.
 
-Turn it on and Render Width, Steps, Octaves, Octave Scale, Step Size, Look,
+Turn it on and Render Width, Steps, Octaves, Octave Scale, Step Size, Temporal, Look,
 Output File, and **Render** are added under the toggle. The live dream pauses
 and the video passes through, so the GPU is free. Turn it off and those
 controls leave the page.
@@ -232,6 +232,7 @@ picture. A mask on the second input is kept.
 | Octaves | How many sizes are dreamed, from small shapes up to Render Width. Slider 2 to 8. Default 4. More octaves add larger structures. |
 | Octave Scale | How much larger each octave is than the one before it. Slider 1.15 to 1.6. Default 1.3, the published still recipe. Higher makes the figures larger. |
 | Step Size | How far each step moves after the gradient is normalized. Slider 0.004 to 0.03. Default 0.01. Higher is stronger and can speckle. |
+| Temporal | How much of the previous dream is kept, after it is moved with the picture. Slider 0 to 1. Default 0.65. 0 dreams each frame alone, so the figures flicker. 1 holds them wherever the picture matches. A cut starts a new dream. The preview is one frame, so this shows up only in the movie. |
 | Look | Classic grows the published figures in the picture. Deep grows smaller, denser figures. Fine follows larger shapes already in the picture. |
 | Output File | MP4 path. Empty saves next to the TOX. The length matches the Movie File In. The preview is the same name with `_preview.png`. |
 | Render | Opens the terminal, explains the settings, shows one preview frame, and asks before writing the MP4. |

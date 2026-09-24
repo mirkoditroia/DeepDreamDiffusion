@@ -96,8 +96,14 @@ def explain_settings(args) -> None:
     say(f"Step Size     {args.step_size}")
     say("  How far each step moves after the gradient is normalized.")
     say("  0.01 is the usual start. Higher is stronger and can speckle.")
+    say(f"Temporal      {args.temporal}")
+    say("  How much of the previous dream is kept, after it is moved with the picture.")
+    say("  0 dreams every frame alone, so the figures flicker.")
+    say("  0.65 is the default. 1 holds the figures still wherever the picture matches.")
+    say("  A cut drops the held dream, so the new shot is not a ghost of the old one.")
     say("")
     say("A preview frame is rendered first, with these settings.")
+    say("The preview is one frame, so Temporal is not visible there.")
     say("You choose whether the whole movie is written after you see it.")
 
 
@@ -384,7 +390,34 @@ def _dream_frame(model, rgb: np.ndarray, args, prefix: str) -> np.ndarray:
         on_step=on_step,
     )
     mask = Path(args.mask) if args.mask else None
-    return _apply_mask(dream, original, mask, args.mask_channel)
+    dream = _apply_mask(dream, original, mask, args.mask_channel)
+    return dream, rgb
+
+
+def stabilize_frame(
+    tracker,
+    dream: np.ndarray,
+    source: np.ndarray,
+    previous_dream: np.ndarray | None,
+    previous_source: np.ndarray | None,
+    amount: float,
+) -> np.ndarray:
+    """Hold the previous dream on the moving picture. A cut keeps the new dream."""
+    if (
+        amount <= 0.0
+        or previous_dream is None
+        or previous_source is None
+        or dream.shape != previous_dream.shape
+        or source.shape != previous_source.shape
+    ):
+        return dream
+    return tracker.blend(
+        dream,
+        previous_dream,
+        source,
+        previous_source,
+        float(amount),
+    )
 
 
 def _preview_bgr(movie: Path) -> tuple[np.ndarray, int]:
@@ -447,7 +480,7 @@ def render_preview(args, model: _InceptionFeatures) -> bool:
         "This is the look the movie will have."
     )
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    dream = _dream_frame(model, rgb, args, "preview")
+    dream, _source = _dream_frame(model, rgb, args, "preview")
     output = Path(args.output)
     if output.suffix.lower() != ".mp4":
         output = output.with_suffix(".mp4")
@@ -483,6 +516,19 @@ def render_movie(args, model: _InceptionFeatures) -> None:
     writer = None
     processed = 0
     started = time.perf_counter()
+    from .live_engine import TemporalTracker
+
+    tracker = TemporalTracker()
+    previous_dream = None
+    previous_source = None
+    amount = float(args.temporal)
+    if amount <= 0.0:
+        say("Temporal filter is off. Each frame is dreamed on its own.")
+    else:
+        say(
+            f"Temporal filter {amount:.2f}. "
+            "Figures stay with the picture. A cut starts a new dream."
+        )
     try:
         while True:
             ok, frame_bgr = capture.read()
@@ -493,7 +539,17 @@ def render_movie(args, model: _InceptionFeatures) -> None:
             rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             prefix = f"frame {processed}/{total_label}"
             say(prefix)
-            dream = _dream_frame(model, rgb, args, prefix)
+            dream, source = _dream_frame(model, rgb, args, prefix)
+            dream = stabilize_frame(
+                tracker,
+                dream,
+                source,
+                previous_dream,
+                previous_source,
+                amount,
+            )
+            previous_dream = dream
+            previous_source = source
             bgr = cv2.cvtColor(
                 np.clip(dream * 255.0, 0, 255).astype(np.uint8),
                 cv2.COLOR_RGB2BGR,
@@ -584,6 +640,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--octaves", type=int, default=4)
     parser.add_argument("--scale", type=float, default=1.3)
     parser.add_argument("--step-size", type=float, default=0.01)
+    parser.add_argument("--temporal", type=float, default=0.65)
     parser.add_argument("--look", choices=tuple(LOOKS), default="classic")
     parser.add_argument("--mask", default="")
     parser.add_argument("--mask-channel", choices=("alpha", "luminance"), default="alpha")
@@ -603,6 +660,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--scale must be from 1.05 to 2.")
     if not 0.001 <= args.step_size <= 0.08:
         parser.error("--step-size must be from 0.001 to 0.08.")
+    if not 0.0 <= args.temporal <= 1.0:
+        parser.error("--temporal must be from 0 to 1.")
     return args
 
 
