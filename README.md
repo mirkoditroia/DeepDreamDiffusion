@@ -63,7 +63,8 @@ stay a copy of the source. Dark objects inside the picture are still dreamed.
 
 The second input is an optional mask. White shows the dream, black keeps the
 original video, and values in between blend. **Mask Channel** chooses Alpha or
-Luminance RGB. The mask is resized to the video.
+Luminance RGB. The mask is resized to the video. Disconnecting it shows the
+dream on the whole frame again.
 
 **Sync Frames** is on by default. Realtime stays as you set it. Each cook
 waits until that video frame has been dreamed, so the movie and the dream
