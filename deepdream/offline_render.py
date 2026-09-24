@@ -50,6 +50,20 @@ LOOKS = {
     "deep": ("Mixed_6c", "Mixed_6e"),
     "fine": ("Mixed_5d", "Mixed_6a"),
 }
+LOOK_TEXT = {
+    "classic": (
+        "Classic amplifies Mixed_6a and Mixed_6c, the published DeepDream pair. "
+        "Figures grow in the picture."
+    ),
+    "deep": (
+        "Deep amplifies Mixed_6c and Mixed_6e. "
+        "The figures are smaller and denser."
+    ),
+    "fine": (
+        "Fine amplifies Mixed_5d and Mixed_6a. "
+        "It follows larger shapes already in the picture."
+    ),
+}
 
 _MIN_OCTAVE = 128
 _TILE_AT = 1280
@@ -58,6 +72,37 @@ _TILE = 512
 
 def say(message: str) -> None:
     print(message, flush=True)
+
+
+def explain_settings(args) -> None:
+    """Print what each offline control does, with the values for this run."""
+    say("DeepDream Diffusion offline render")
+    say("These settings decide the look. They are not the live TouchDesigner controls.")
+    say("")
+    say(f"Look          {args.look}")
+    say(f"  {LOOK_TEXT[args.look]}")
+    say(f"Render Width  {args.width}")
+    say("  Width of the picture Inception sees. The height follows the video.")
+    say("  Higher keeps more detail and takes longer. 960 is the default.")
+    say(f"Steps         {args.steps}")
+    say("  Ascent steps on every octave.")
+    say("  20 keeps the photo and grows figures in it. 50 to 100 covers the photo.")
+    say(f"Octaves       {args.octaves}")
+    say("  How many sizes are dreamed, from small shapes up to Render Width.")
+    say("  More octaves add larger structures. 4 is the default.")
+    say(f"Octave Scale  {args.scale}")
+    say("  How much larger each octave is than the one before it.")
+    say("  1.3 is the published still recipe. Higher makes the figures larger.")
+    say(f"Step Size     {args.step_size}")
+    say("  How far each step moves after the gradient is normalized.")
+    say("  0.01 is the usual start. Higher is stronger and can speckle.")
+    say("")
+    say("A preview frame is rendered first, with these settings.")
+    say("You choose whether the whole movie is written after you see it.")
+
+
+def wants_full_render(answer: str) -> bool:
+    return answer.strip().lower() in ("y", "yes")
 
 
 def octave_sizes(
@@ -314,6 +359,105 @@ def render_still(args, model: _InceptionFeatures) -> None:
     say(f"Done in {time.perf_counter() - started:.1f} s")
 
 
+def _dream_frame(model, rgb: np.ndarray, args, prefix: str) -> np.ndarray:
+    original = rgb
+    rgb = _resize_rgb(rgb, args.width)
+
+    def on_octave(index, total, width, height, prefix=prefix):
+        say(f"{prefix}  octave {index + 1}/{total}  {width}x{height}")
+
+    def on_step(index, total, step, steps, loss, prefix=prefix):
+        if step == steps or step % 10 == 0:
+            say(
+                f"{prefix}  octave {index + 1}/{total}  "
+                f"step {step}/{steps}  loss {loss:.3f}"
+            )
+
+    dream = dream_tensor(
+        model,
+        rgb,
+        steps=args.steps,
+        octaves=args.octaves,
+        step_size=args.step_size,
+        scale=args.scale,
+        on_octave=on_octave,
+        on_step=on_step,
+    )
+    mask = Path(args.mask) if args.mask else None
+    return _apply_mask(dream, original, mask, args.mask_channel)
+
+
+def _preview_bgr(movie: Path) -> tuple[np.ndarray, int]:
+    """First frame that is not a black opener, within the first 90 frames."""
+    capture = cv2.VideoCapture(str(movie))
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not open the movie: {movie}")
+    chosen = None
+    chosen_index = 0
+    try:
+        for index in range(90):
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                break
+            if chosen is None:
+                chosen = frame
+                chosen_index = index
+            if float(frame.mean()) >= 12.0:
+                return frame, index
+    finally:
+        capture.release()
+    if chosen is None:
+        raise RuntimeError(f"The movie has no frames: {movie}")
+    return chosen, chosen_index
+
+
+def _open_preview(path: Path) -> None:
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+        say(f"Opened the preview: {path}")
+    except Exception as exc:
+        say(f"Preview saved at {path}. It could not be opened automatically ({exc}).")
+
+
+def _ask_to_continue() -> bool:
+    say("")
+    say("Look at the preview. It uses the settings printed above.")
+    say("Type y and press Enter to render the whole movie.")
+    say("Press Enter alone to stop. Only the preview is kept.")
+    try:
+        answer = input("> ")
+    except EOFError:
+        say("No answer. Stopped. The movie was not written.")
+        return False
+    if wants_full_render(answer):
+        say("Rendering the whole movie.")
+        return True
+    say("Stopped. The movie was not written.")
+    return False
+
+
+def render_preview(args, model: _InceptionFeatures) -> bool:
+    """Dream one frame, open it, and ask before the movie is written."""
+    frame_bgr, index = _preview_bgr(Path(args.movie))
+    say(
+        f"Rendering preview from source frame {index + 1}. "
+        "This is the look the movie will have."
+    )
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    dream = _dream_frame(model, rgb, args, "preview")
+    output = Path(args.output)
+    if output.suffix.lower() != ".mp4":
+        output = output.with_suffix(".mp4")
+    preview = output.with_name(output.stem + "_preview.png")
+    _write_rgb(preview, dream)
+    say(f"Preview saved: {preview}")
+    _open_preview(preview)
+    return _ask_to_continue()
+
+
 def render_movie(args, model: _InceptionFeatures) -> None:
     source = Path(args.movie)
     capture = cv2.VideoCapture(str(source))
@@ -347,33 +491,9 @@ def render_movie(args, model: _InceptionFeatures) -> None:
             processed += 1
             total_label = str(frame_count) if frame_count > 0 else "?"
             rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            original = rgb
-            rgb = _resize_rgb(rgb, args.width)
             prefix = f"frame {processed}/{total_label}"
             say(prefix)
-
-            def on_octave(index, total, width, height, prefix=prefix):
-                say(f"{prefix}  octave {index + 1}/{total}  {width}x{height}")
-
-            def on_step(index, total, step, steps, loss, prefix=prefix):
-                if step == steps or step % 10 == 0:
-                    say(
-                        f"{prefix}  octave {index + 1}/{total}  "
-                        f"step {step}/{steps}  loss {loss:.3f}"
-                    )
-
-            dream = dream_tensor(
-                model,
-                rgb,
-                steps=args.steps,
-                octaves=args.octaves,
-                step_size=args.step_size,
-                scale=args.scale,
-                on_octave=on_octave,
-                on_step=on_step,
-            )
-            mask = Path(args.mask) if args.mask else None
-            dream = _apply_mask(dream, original, mask, args.mask_channel)
+            dream = _dream_frame(model, rgb, args, prefix)
             bgr = cv2.cvtColor(
                 np.clip(dream * 255.0, 0, 255).astype(np.uint8),
                 cv2.COLOR_RGB2BGR,
@@ -492,16 +612,13 @@ def main(argv: list[str] | None = None) -> None:
     if lock is not None:
         lock.write_text(str(os.getpid()), encoding="ascii")
     try:
-        say("DeepDream Diffusion - offline render")
-        say(
-            f"Look {args.look} ({', '.join(LOOKS[args.look])})  "
-            f"width {args.width}  steps {args.steps}  "
-            f"octaves {args.octaves}  scale {args.scale}  step {args.step_size}"
-        )
+        explain_settings(args)
         say("The live component is not used for this file.")
         model = _load_model(LOOKS[args.look], args.device)
         if args.movie:
             say(f"Movie: {args.movie}")
+            if not render_preview(args, model):
+                raise SystemExit(2)
             render_movie(args, model)
         else:
             say(f"Image: {args.image}")

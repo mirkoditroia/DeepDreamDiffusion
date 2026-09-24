@@ -209,10 +209,14 @@ and the video passes through, so the GPU is free. Turn it off and those
 controls leave the page.
 
 Connect a Movie File In, then pulse **Render**. A terminal window opens and
-prints each frame. The result is an MP4 of that movie: every frame, at the
-movie's own frame rate, so a 10 second input is a 10 second file. If **Output
-File** is empty, it is written in a `renders` folder next to this TOX. When
-ffmpeg is available, the original audio is copied into that MP4.
+prints what each setting does, with the values you chose. It then dreams one
+preview frame and opens that picture. Type `y` and Enter to write the whole
+movie, or Enter alone to stop and keep only the preview. The movie is an MP4
+of the Movie File In: every frame, at the movie's own frame rate, so a 10
+second input is a 10 second file. If **Output File** is empty, it is written
+in a `renders` folder next to this TOX, and the preview is the same name with
+`_preview.png`. When ffmpeg is available, the original audio is copied into
+that MP4.
 
 This render uses Inception v3 and the published DeepDream still recipe. It
 does not use the live model. Each frame takes about a minute at the default
@@ -223,14 +227,14 @@ picture. A mask on the second input is kept.
 | Control | What it does |
 | --- | --- |
 | Offline Render | Off is live, and these controls are absent. On adds them and pauses the live dream. |
-| Render Width | Width Inception sees. Slider 256 to 2048. Default 960. Higher is slower and finer. |
-| Steps | Ascent steps on every octave. Slider 8 to 200. Default 20 keeps the picture and grows figures in it. 50 to 100 covers the picture. |
-| Octaves | Scales from small shapes up to Render Width. Slider 2 to 8. Default 4. |
-| Octave Scale | Size change between octaves. Slider 1.15 to 1.6. Default 1.3. |
-| Step Size | Step after the gradient is normalized. Slider 0.004 to 0.03. Default 0.01. Higher values speckle sooner. |
-| Look | Classic is the published layer pair. Deep grows denser figures. Fine follows larger shapes. |
-| Output File | MP4 path. Empty saves next to the TOX. The length matches the Movie File In. |
-| Render | Opens the terminal and writes the MP4. |
+| Render Width | Width Inception sees. The height follows the video. Slider 256 to 2048. Default 960. Higher keeps more detail and takes longer. |
+| Steps | Ascent steps on every octave. Slider 8 to 200. Default 20 keeps the photo and grows figures in it. 50 to 100 covers the photo. |
+| Octaves | How many sizes are dreamed, from small shapes up to Render Width. Slider 2 to 8. Default 4. More octaves add larger structures. |
+| Octave Scale | How much larger each octave is than the one before it. Slider 1.15 to 1.6. Default 1.3, the published still recipe. Higher makes the figures larger. |
+| Step Size | How far each step moves after the gradient is normalized. Slider 0.004 to 0.03. Default 0.01. Higher is stronger and can speckle. |
+| Look | Classic grows the published figures in the picture. Deep grows smaller, denser figures. Fine follows larger shapes already in the picture. |
+| Output File | MP4 path. Empty saves next to the TOX. The length matches the Movie File In. The preview is the same name with `_preview.png`. |
+| Render | Opens the terminal, explains the settings, shows one preview frame, and asks before writing the MP4. |
 
 ## Parameters
 
