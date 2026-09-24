@@ -65,7 +65,7 @@ The second input is an optional mask. White shows the dream, black keeps the
 original video, and values in between blend. **Mask Channel** chooses Alpha or
 Luminance RGB. The mask is resized to the video.
 
-**Sync Frames** is on by default. The project leaves Realtime, and each cook
+**Sync Frames** is on by default. Realtime stays as you set it. Each cook
 waits until that video frame has been dreamed, so the movie and the dream
 advance together. A Movie File In playing on its own clock (Play Mode
 Sequential) steps one project frame per dream while the toggle is on, and is
@@ -77,8 +77,8 @@ project and about 10 fps of dream, Sequential used to skip ahead on the slow
 cooks, and the file — stamped at 24 fps — played too fast. With Sync Frames
 on, each recorded image is the next project frame, so playback stays at 24 fps.
 
-Turning Sync Frames off restores the previous Realtime setting. The project
-then keeps its own frame rate, and the latest dream is carried onto the new
+Turning Sync Frames off puts that movie back on its own clock. The project
+keeps its own frame rate, and the latest dream is carried onto the new
 frames until the next one is ready.
 
 There is one picture output. **Enable Stats CHOP** exposes a CHOP with
@@ -260,7 +260,7 @@ picture. A mask on the second input is kept.
 | Saturation | Color strength of the result. Slider 0 to 3. `1.2` is slightly vivid. |
 | Effect Contrast | Strength of the dream against the picture, applied at the video resolution. Slider 0 to 3. `1.2` is the start. `1` is the dream as calculated. `0` is the original video. Process Width does not have to go up for the effect to read more clearly. |
 | Reset Feedback | Clears the temporal image. |
-| Sync Frames | On by default. Leaves Realtime and locks each video frame to its dream. Off keeps the project frame rate and updates the dream when the GPU finishes. |
+| Sync Frames | On by default. Realtime stays as you set it. A movie playing on its own clock steps one project frame per dream. Off puts that movie back on its own clock. |
 
 A visible feedback starting point: Zoom `0.01`, Rotate `1`, Feedback `0.4`,
 Temporal Blend `0.25`, with Sync Frames off so the project keeps running.
