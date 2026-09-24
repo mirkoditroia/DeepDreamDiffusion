@@ -66,6 +66,9 @@ original video, and values in between blend. **Mask Channel** chooses Alpha or
 Luminance RGB. The mask is resized to the video. Disconnecting it shows the
 dream on the whole frame again.
 
+Changing the source movie, or its resolution, shows the dream on the new
+picture again. A size change does not leave the output on the original video.
+
 **Sync Frames** is on by default. Realtime stays as you set it. Each cook
 waits until that video frame has been dreamed, so the movie and the dream
 advance together. A Movie File In playing on its own clock (Play Mode

@@ -328,6 +328,7 @@ class LiveDreamEngine:
         self.last_dream01 = None
         self.last_clean01 = None
         self._temporal.reset()
+        self._failed_config = None
 
     def load_model_now(self, layer: str) -> str | None:
         """Load the active model on this thread. The GPU worker uses this so
@@ -407,6 +408,14 @@ class LiveDreamEngine:
     ) -> np.ndarray:
         """img01 RGB float [0,1] -> dreamed RGB float [0,1] (stessa risoluzione proc)."""
         img01 = resize_rgb01(img01, proc_width)
+        if (
+            self._failed_config is not None
+            and len(self._failed_config) > 2
+            and self._failed_config[2] != img01.shape[:2]
+        ):
+            self._failed_config = None
+        if self.last_dream01 is not None and self.last_dream01.shape != img01.shape:
+            self.reset_feedback()
         clean01 = img01
         layer = controls.layer or DEFAULT_LAYERS[self.model_name][0]
         dreamer = self._get_dreamer(layer)
@@ -597,6 +606,23 @@ class AsyncLiveDreamEngine:
         self._sync_effect = None
         self._sync_progress = 1.0
 
+    def _return_dream(self, resized: np.ndarray) -> np.ndarray:
+        """Use the finished dream. A new video size must not fall back to the raw frame."""
+        result = self._last_result
+        if result is None:
+            self.output_source = resized
+            return resized
+        if result.shape[:2] != resized.shape[:2]:
+            result = cv2.resize(
+                result,
+                (int(resized.shape[1]), int(resized.shape[0])),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            self.output_source = resized
+            return result
+        self.output_source = self._last_source
+        return result
+
     def _run_frame(
         self,
         img01: np.ndarray,
@@ -683,14 +709,7 @@ class AsyncLiveDreamEngine:
                 reset,
             )
 
-        if (
-            self._last_result is not None
-            and self._last_result.shape == resized.shape
-        ):
-            self.output_source = self._last_source
-            return self._last_result
-        self.output_source = resized
-        return resized
+        return self._return_dream(resized)
 
     def process_frame_sync(
         self,
@@ -777,22 +796,9 @@ class AsyncLiveDreamEngine:
                 time.sleep(0.001)
                 continue
             self._absorb_isolated(finished)
-            if (
-                self._last_result is not None
-                and self._last_result.shape == resized.shape
-            ):
-                self.output_source = self._last_source
-                return self._last_result
-            self.output_source = resized
-            return resized
+            return self._return_dream(resized)
         self.status = "Processing failed: sync timed out"
-        self.output_source = resized
-        if (
-            self._last_result is not None
-            and self._last_result.shape == resized.shape
-        ):
-            return self._last_result
-        return resized
+        return self._return_dream(resized)
 
     def _absorb_thread(self, payload) -> None:
         result, source, status, result_model, elapsed = payload
@@ -848,14 +854,7 @@ class AsyncLiveDreamEngine:
             self.output_source = resized
             return resized
         self._future = None
-        if (
-            self._last_result is not None
-            and self._last_result.shape == resized.shape
-        ):
-            self.output_source = self._last_source
-            return self._last_result
-        self.output_source = resized
-        return resized
+        return self._return_dream(resized)
 
     def composite_frame(
         self,
@@ -985,11 +984,4 @@ class AsyncLiveDreamEngine:
                 reset,
             )
 
-        if (
-            self._last_result is not None
-            and self._last_result.shape == resized.shape
-        ):
-            self.output_source = self._last_source
-            return self._last_result
-        self.output_source = resized
-        return resized
+        return self._return_dream(resized)
