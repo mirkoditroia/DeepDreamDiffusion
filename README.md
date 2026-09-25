@@ -32,7 +32,9 @@ installer downloads Python for you.
 2. Select the component and open the **Setup** page. **Status** says what to
    do next.
 3. Pulse **Install Environment**. A window opens. The first run takes several
-   minutes, mostly to download PyTorch. You do this once.
+   minutes, mostly to download PyTorch. You do this once. Yellow NVIDIA
+   warnings in that window can be ignored. The install is fine if it ends with
+   "Installation complete."
 4. When the window says the installation is complete, pulse **Check
    Dependencies**. Status reports the PyTorch version and `CUDA=True`.
 5. Connect a Movie File In or Video Device In to the first input and turn
