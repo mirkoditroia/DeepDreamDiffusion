@@ -65,6 +65,8 @@ scaled back to the video resolution. The upscaled dream is sharpened by about
 one dream pixel, then its difference from a blur of the picture is scaled by
 **Effect Contrast** and added to the original video. The photo's fine detail
 stays, and the dream can read more clearly without a larger Process Width.
+Changing the video resolution or Process Width realigns the picture. If the
+dream disappears anyway, pulse **Reset**.
 
 Flat near-black bars that touch the edge of the frame (letterbox or pillarbox)
 stay a copy of the source. Dark objects inside the picture are still dreamed.
