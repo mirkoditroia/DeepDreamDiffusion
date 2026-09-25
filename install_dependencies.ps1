@@ -134,26 +134,27 @@ try {
     }
 
     Write-Log "Updating pip"
-    & $VenvPython -m pip install --isolated --disable-pip-version-check --upgrade pip
+    & $VenvPython -m pip install --isolated --disable-pip-version-check --no-warn-script-location --upgrade pip
     if ($LASTEXITCODE -ne 0) { throw "Could not update pip." }
 
     if ($Device -eq "cuda") {
         Write-Log "Installing PyTorch with CUDA. This is the long step."
-        & $VenvPython -m pip install --isolated --disable-pip-version-check `
+        & $VenvPython -m pip install --isolated --disable-pip-version-check --no-warn-script-location `
             "torch==2.11.0+cu128" `
             "torchvision==0.26.0+cu128" `
             --index-url $TorchIndex
     } else {
         Write-Log "Installing the CPU build of PyTorch."
-        & $VenvPython -m pip install --isolated --disable-pip-version-check torch torchvision
+        & $VenvPython -m pip install --isolated --disable-pip-version-check --no-warn-script-location torch torchvision
     }
     if ($LASTEXITCODE -ne 0) { throw "Could not install PyTorch." }
 
     Write-Log "Installing OpenCV, NumPy, and Pillow"
-    & $VenvPython -m pip install --isolated --disable-pip-version-check `
+    & $VenvPython -m pip install --isolated --disable-pip-version-check --no-warn-script-location `
         opencv-contrib-python "numpy<2" "pillow>=10"
     if ($LASTEXITCODE -ne 0) { throw "Could not install the remaining libraries." }
 
+    $env:PYTHONWARNINGS = "ignore"
     & $VenvPython -c "import torch, cv2; print('torch', torch.__version__, 'CUDA', torch.cuda.is_available()); print('opencv', cv2.__version__)"
     if ($LASTEXITCODE -ne 0) { throw "The installed libraries could not be imported." }
 
