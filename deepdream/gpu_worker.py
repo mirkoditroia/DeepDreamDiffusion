@@ -45,6 +45,12 @@ CTRL_DTYPE = np.dtype(
         ("rotate", "<f4"),
         ("saturation", "<f4"),
         ("elapsed", "<f4"),
+        ("fourier_decay", "<f4"),
+        ("chroma", "<f4"),
+        ("coarse_boost", "<f4"),
+        ("octave_scale", "<f4"),
+        ("memory", "<f4"),
+        ("spread_levels", "<u4"),
         ("model", "S32"),
         ("layer", "S64"),
         ("status", "S240"),
@@ -216,6 +222,12 @@ class GpuBridge:
         slot["zoom"] = float(controls.zoom)
         slot["rotate"] = float(controls.rotate)
         slot["saturation"] = float(controls.saturation)
+        slot["fourier_decay"] = float(controls.fourier_decay)
+        slot["chroma"] = float(controls.chroma)
+        slot["coarse_boost"] = float(controls.coarse_boost)
+        slot["octave_scale"] = float(controls.octave_scale)
+        slot["memory"] = float(controls.memory)
+        slot["spread_levels"] = int(bool(controls.spread_levels))
         _put_text(slot, "model", model, 32)
         _put_text(slot, "layer", controls.layer or "", 64)
         self._inflight = frame
@@ -386,7 +398,7 @@ def _run_worker(
             try:
                 height = int(ctrl[0]["height"])
                 width = int(ctrl[0]["width"])
-                model = _text(ctrl[0]["model"]) or "vgg16"
+                model = _text(ctrl[0]["model"]) or "inception_v1"
                 layer = _text(ctrl[0]["layer"]) or None
                 frame = np.array(src[:height, :width], dtype=np.float32, copy=True)
                 if engine.model_name != model:
@@ -410,6 +422,12 @@ def _run_worker(
                     rotate=float(ctrl[0]["rotate"]),
                     saturation=float(ctrl[0]["saturation"]),
                     layer=layer,
+                    fourier_decay=float(ctrl[0]["fourier_decay"]),
+                    chroma=float(ctrl[0]["chroma"]),
+                    coarse_boost=float(ctrl[0]["coarse_boost"]),
+                    octave_scale=float(ctrl[0]["octave_scale"]),
+                    memory=float(ctrl[0]["memory"]),
+                    spread_levels=bool(ctrl[0]["spread_levels"]),
                 )
                 result = engine.process_frame(
                     frame,

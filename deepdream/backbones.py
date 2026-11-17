@@ -13,14 +13,17 @@ BACKBONE_LAYERS: dict[str, list[str]] = {
         "relu3_3", "relu4_1", "relu4_2", "relu4_3",
         "relu5_1", "relu5_2", "relu5_3", "mp5",
     ],
-    "googlenet": ["inception3b", "inception4c", "inception4d", "inception4e"],
+    "inception_v1": [
+        "mixed3a", "mixed3b", "mixed4a", "mixed4b",
+        "mixed4c", "mixed4d", "mixed4e", "mixed5a",
+    ],
 }
 
 # Layer di default consigliati per ogni backbone.
 DEFAULT_LAYERS: dict[str, list[str]] = {
     "vgg16": ["relu4_3"],
     "vgg16_exp": ["relu4_3"],
-    "googlenet": ["inception4c", "inception4d", "inception4e"],
+    "inception_v1": ["mixed4c"],
 }
 
 

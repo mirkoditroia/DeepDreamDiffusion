@@ -6,7 +6,7 @@ Come il DeepDream originale (Mordvintsev / caffe):
    e l'animale in anelli magenta e verdi.
 3. Lo step divide il gradiente per la sua media assoluta e non gli toglie il colore.
 4. Ogni ottava parte dalla foto e tiene solo il dettaglio nuovo.
-5. Backbone selezionabili: VGG16 o GoogLeNet.
+5. Backbone selezionabili: InceptionV1 (DeepDream 2015) o VGG16.
 """
 
 from __future__ import annotations
@@ -29,6 +29,75 @@ IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # 1.5 on a 0-255 image. The tensor here is ImageNet-normalized, so this scale
 # makes 0.09 equal that step. A larger step saturates into colored rings.
 _STEP_SCALE = (1.5 / 255.0) / float(IMAGENET_STD.mean()) / 0.09
+# Enough for every level of the largest pyramid (8), twice over.
+_MAX_ASCENT_GRAPHS = 16
+
+# Square root of the ImageNet color covariance, from Lucid (Olah et al. 2017).
+# A step taken in this basis moves light and shadow first and hue second.
+_COLOR_SQRT = np.array(
+    [[0.26, 0.09, 0.02], [0.27, 0.00, -0.05], [0.27, -0.09, 0.03]],
+    dtype=np.float32,
+)
+
+
+class GradientPreconditioner:
+    """Shape each ascent step like a natural image: 1/f spectrum, correlated color.
+
+    The raw gradient of a classifier is mostly pixel-sized grain and the
+    stride grid of its pooling. Dividing its spectrum by frequency**decay lets
+    a step grow whole shapes, so the same iterations reach larger figures.
+    Mixing the color toward the ImageNet covariance makes new figures take the
+    colors of the picture instead of green and magenta. This is not a blur:
+    every frequency is kept, only the balance between them changes.
+
+    Decay 0 and Chroma 1 are the plain DeepDream step. Both values live in
+    device tensors, so a captured CUDA graph follows them without a recapture.
+    """
+
+    def __init__(self, device: torch.device):
+        self.device = device
+        basis = torch.from_numpy(_COLOR_SQRT)
+        basis = basis / basis.norm(dim=0).max()
+        luma = basis @ basis.T
+        self.luma = (luma / luma.diagonal().mean()).to(device)
+        self.eye = torch.eye(3, device=device)
+        self.decay = torch.zeros((), device=device)
+        self.chroma = torch.ones((), device=device)
+        self._log_freq: dict[tuple[int, int], torch.Tensor] = {}
+
+    @staticmethod
+    def enabled(decay: float, chroma: float) -> bool:
+        return decay > 1e-4 or chroma < 1.0 - 1e-4
+
+    def set(self, decay: float, chroma: float) -> None:
+        self.decay.fill_(float(decay))
+        self.chroma.fill_(float(min(1.0, max(0.0, chroma))))
+
+    def _log_frequency(self, height: int, width: int) -> torch.Tensor:
+        key = (height, width)
+        cached = self._log_freq.get(key)
+        if cached is None:
+            fy = torch.fft.fftfreq(height, device=self.device)[:, None]
+            fx = torch.fft.rfftfreq(width, device=self.device)[None, :]
+            freq = torch.sqrt(fx * fx + fy * fy).clamp_min(1.0 / max(height, width))
+            log_freq = torch.log(freq)
+            # The average color of the step keeps the weight of the finest
+            # detail. Raised like the lowest shapes, it washes the whole frame
+            # toward white (about 20 of 255 on VGG16 at decay 1).
+            log_freq[0, 0] = math.log(0.5)
+            cached = log_freq[None, None]
+            self._log_freq[key] = cached
+        return cached
+
+    def __call__(self, grad: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
+        """grad is d(loss)/d(normalized image). Returns a step in the same space."""
+        _, _, height, width = grad.shape
+        rgb = grad.float() / std
+        mix = self.luma * (1.0 - self.chroma) + self.eye * self.chroma
+        rgb = torch.einsum("ij,bjhw->bihw", mix, rgb)
+        weight = torch.exp(-self.decay * self._log_frequency(height, width))
+        rgb = torch.fft.irfft2(torch.fft.rfft2(rgb) * weight, s=(height, width))
+        return (rgb / std).contiguous(memory_format=torch.channels_last)
 
 
 class CascadeGaussianSmoothing(nn.Module):
@@ -119,10 +188,17 @@ class _AscentGraph:
     ascent as one graph is a single launch.
     """
 
-    def __init__(self, dreamer: GordicDream, height: int, width: int):
+    def __init__(
+        self,
+        dreamer: GordicDream,
+        height: int,
+        width: int,
+        precondition: bool = False,
+    ):
         self.dreamer = dreamer
         self.height = height
         self.width = width
+        self.precondition = precondition
         device = dreamer.device
         image = torch.zeros(
             (1, 3, height, width), device=device, dtype=torch.float32
@@ -147,6 +223,10 @@ class _AscentGraph:
             loss = self.dreamer._loss(self.static_x, self.static_support)
         (gradient,) = torch.autograd.grad(loss, self.static_x)
         with torch.no_grad():
+            if self.precondition:
+                gradient = self.dreamer.preconditioner(
+                    gradient, self.dreamer.std
+                )
             scaled = self.dreamer._scale_gradient(gradient, self.static_support)
             updated = torch.clamp(
                 self.static_x.detach() + self.static_scale * _STEP_SCALE * scaled,
@@ -191,13 +271,14 @@ class GordicDream:
 
     def __init__(
         self,
-        model_name: str = "vgg16",
+        model_name: str = "inception_v1",
         layers: list[str] | None = None,
         device: str = "cuda",
     ):
         self.device = torch.device(device)
         self.model = build_backbone(model_name, self.device)
         self.use_amp = self.device.type == "cuda"
+        self.last_detail: torch.Tensor | None = None
         if self.device.type == "cuda":
             # Pyramid and live-resolution changes produce many input shapes.
             # cuDNN benchmarking blocks while testing algorithms for every new
@@ -232,6 +313,8 @@ class GordicDream:
         self._smoothing_cache: dict[float, CascadeGaussianSmoothing] = {}
         self._ascent_graphs: dict[tuple, _AscentGraph] = {}
         self._graph_failed: set[tuple] = set()
+        self.preconditioner = GradientPreconditioner(self.device)
+        self._precondition_on = False
 
     def release_cuda_graphs(self) -> None:
         self._ascent_graphs.clear()
@@ -239,14 +322,16 @@ class GordicDream:
     def _get_ascent_graph(self, height: int, width: int) -> _AscentGraph | None:
         if self.device.type != "cuda":
             return None
-        key = (tuple(self.layers), height, width)
+        key = (tuple(self.layers), height, width, self._precondition_on)
         cached = self._ascent_graphs.get(key)
         if cached is not None:
             return cached
         if key in self._graph_failed:
             return None
         try:
-            graph = _AscentGraph(self, height, width)
+            graph = _AscentGraph(
+                self, height, width, precondition=self._precondition_on
+            )
         except Exception as exc:
             self._graph_failed.add(key)
             try:
@@ -258,7 +343,10 @@ class GordicDream:
                 f"{width}x{height}, eager step will be used: {exc}"
             )
             return None
-        if len(self._ascent_graphs) >= 6:
+        # One graph per pyramid level. With fewer slots than levels, the
+        # levels evict each other and every frame recaptures them all
+        # (with 6 slots, Pyramid 8 took 142 ms per dream instead of 42).
+        if len(self._ascent_graphs) >= _MAX_ASCENT_GRAPHS:
             self._ascent_graphs.pop(next(iter(self._ascent_graphs)))
         self._ascent_graphs[key] = graph
         return graph
@@ -333,6 +421,8 @@ class GordicDream:
             loss = self._loss(input_tensor, support)
         loss.backward()
         grad = input_tensor.grad.detach()
+        if self._precondition_on:
+            grad = self.preconditioner(grad, self.std)
         scaled = self._scale_gradient(grad, support)
 
         with torch.no_grad():
@@ -354,13 +444,39 @@ class GordicDream:
         progress: Callable[[int, int], None] | None = None,
         content_source: np.ndarray | None = None,
         use_cuda_graph: bool = False,
+        fourier_decay: float = 0.0,
+        chroma: float = 1.0,
+        coarse_boost: float = 0.0,
+        carry: torch.Tensor | None = None,
+        levels: tuple[int, ...] | None = None,
+        keep_detail: bool = False,
     ) -> np.ndarray:
         """Apply DeepDream to an RGB NumPy image in [0,1], returning the same format.
 
         `content_source` is the picture before feedback. Flat black connected to
         the frame border is a known region: it stays equal to that source and is
         excluded from the loss, the same way a diffusion sampler holds known pixels.
+
+        `fourier_decay` and `chroma` shape each step (see GradientPreconditioner).
+        `coarse_boost` adds steps to the small levels, where large figures are
+        decided and a step is cheap: the smallest level runs
+        `num_iterations * (1 + coarse_boost)`, the full size runs `num_iterations`.
+
+        `carry` is dream detail from the previous frame, already moved onto this
+        one, in normalized network space (see DreamMemory). It is added to the
+        picture before the ascent, on the GPU. `keep_detail` stores the new
+        detail (result minus picture) in `last_detail`, on the GPU.
+
+        `levels` runs only those pyramid levels (0 is the smallest). Their sizes
+        stay those of the whole pyramid. The detail of the last level run is
+        scaled up to full size. With a carried dream, the other levels keep the
+        figures they drew on earlier frames.
         """
+        self._precondition_on = GradientPreconditioner.enabled(
+            fourier_decay, chroma
+        )
+        if self._precondition_on:
+            self.preconditioner.set(fourier_decay, chroma)
         base_h, base_w = img01.shape[:2]
         img = np.ascontiguousarray(img01, dtype=np.float32)
         tensor = (
@@ -372,6 +488,19 @@ class GordicDream:
         if self.device.type == "cuda":
             tensor = tensor.contiguous(memory_format=torch.channels_last)
         tensor = (tensor - self.mean) / self.std
+        clean = tensor
+        if carry is not None and carry.shape == tensor.shape:
+            tensor = torch.clamp(
+                tensor + carry, min=self.lower_bound, max=self.upper_bound
+            )
+            if self.device.type == "cuda":
+                tensor = tensor.contiguous(memory_format=torch.channels_last)
+        run = set(range(pyramid_size))
+        if levels:
+            run &= {int(level) for level in levels}
+        if not run:
+            run = set(range(pyramid_size))
+        last_run = max(run)
 
         guide01 = img01 if content_source is None else content_source
         if guide01.shape[:2] != img01.shape[:2]:
@@ -401,6 +530,8 @@ class GordicDream:
         original = tensor.detach()
         detail: torch.Tensor | None = None
         for level in range(pyramid_size):
+            if level not in run:
+                continue
             exponent = level - pyramid_size + 1
             scale = pyramid_ratio ** exponent
             new_h = max(1, int(round(base_h * scale)))
@@ -447,12 +578,18 @@ class GordicDream:
                 else None
             )
 
-            for it in range(num_iterations):
+            level_steps = num_iterations
+            if coarse_boost > 0.0 and pyramid_size > 1:
+                coarseness = (pyramid_size - 1 - level) / (pyramid_size - 1)
+                level_steps += int(
+                    round(num_iterations * coarse_boost * coarseness)
+                )
+            for it in range(level_steps):
                 h_shift, w_shift = _jitter_shift(
                     level, it, spatial_shift_size
                 )
                 sigma = (
-                    (it + 1) / num_iterations
+                    (it + 1) / level_steps
                 ) * 2.0 + smoothing_coefficient
                 if graph is not None:
                     with torch.no_grad():
@@ -496,7 +633,7 @@ class GordicDream:
                     self._gradient_ascent_step(
                         tensor,
                         it,
-                        num_iterations,
+                        level_steps,
                         lr,
                         smoothing_coefficient,
                         intensity,
@@ -523,6 +660,16 @@ class GordicDream:
                     detail = detail * support_level
 
         with torch.no_grad():
+            if last_run != pyramid_size - 1 and detail is not None:
+                # The full size was not dreamed this frame: carry the detail
+                # of the last level up to it.
+                tensor = original + F.interpolate(
+                    detail, size=(base_h, base_w), mode="bilinear", align_corners=False
+                )
+                if support_base is not None and guide_norm is not None:
+                    tensor = _hold_void(tensor, guide_norm, support_base)
+            tensor = tensor.detach()
+            self.last_detail = (tensor - clean) if keep_detail else None
             output = (
                 (tensor * self.std + self.mean)
                 .clamp_(0.0, 1.0)

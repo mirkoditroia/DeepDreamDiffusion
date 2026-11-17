@@ -19,8 +19,13 @@ from .backbones import BACKBONE_LAYERS, DEFAULT_LAYERS
 def enhance_saturation(img01: np.ndarray, saturation: float) -> np.ndarray:
     if abs(saturation - 1.0) < 1e-3:
         return img01
-    gray = img01.mean(axis=2, keepdims=True)
-    return np.clip(gray + (img01 - gray) * saturation, 0.0, 1.0)
+    # gray + (rgb - gray) * s as one 3x3 matrix: seven times faster than NumPy.
+    s = float(saturation)
+    matrix = np.full((3, 3), (1.0 - s) / 3.0, dtype=np.float32)
+    matrix[np.diag_indices(3)] += s
+    out = cv2.transform(np.ascontiguousarray(img01[..., :3], dtype=np.float32), matrix)
+    np.clip(out, 0.0, 1.0, out=out)
+    return out
 
 
 def apply_feedback_transform(
@@ -249,6 +254,161 @@ class TemporalTracker:
         )
 
 
+class DreamMemory:
+    """Carries the hallucination onto the next frame, moved with the picture.
+
+    Temporal Blend averages two separately dreamed frames: their figures do not
+    match, so the mix fades them and never grows deeper than one frame of
+    ascent. Here the next ascent starts from the new frame plus the previous
+    dream detail (dream minus its source), warped by optical flow, the way
+    optimization-based video stylization keeps a video coherent (Ruder et al.
+    2016). The figures stay on the objects that carry them and keep deepening
+    toward an equilibrium set by the share kept per frame. Only the detail is
+    carried, so the video itself never lags. Where the flow does not explain
+    the new frame (a cut, an uncovered area, the frame edge), nothing is
+    carried and that area is dreamed fresh.
+
+    The detail stays on the GPU, in the network's normalized space. Only the
+    optical flow runs on the CPU, on a 256 px gray copy.
+    """
+
+    # Mean RGB error, on the small copy, at which the flow is not trusted.
+    # Stricter than Temporal Blend: a wrong carry smears a figure.
+    _ERROR_LIMIT = 0.08
+
+    def __init__(self) -> None:
+        self._dis = None
+        self._grids: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+        self._base: dict[tuple[int, int, str], object] = {}
+        self.detail = None  # torch tensor (1, 3, H, W) on the dream device
+        self.source: np.ndarray | None = None
+        self.frame = 0
+
+    def reset(self) -> None:
+        self.detail = None
+        self.source = None
+        self.frame = 0
+
+    def remember(self, detail, source: np.ndarray) -> None:
+        if detail is None:
+            self.reset()
+            return
+        self.detail = detail
+        self.source = np.ascontiguousarray(source, dtype=np.float32)
+        self.frame += 1
+
+    def carry(self, current: np.ndarray, amount: float):
+        """The previous detail moved onto `current`, scaled by `amount` and trust."""
+        if (
+            amount <= 0.0
+            or self.detail is None
+            or self.source is None
+            or self.source.shape != current.shape
+        ):
+            return None
+        motion = self._flow(current)
+        if motion is None:
+            return None
+        import torch
+        import torch.nn.functional as F
+
+        flow_small, confidence_small = motion
+        detail = self.detail
+        height, width = current.shape[:2]
+        device = detail.device
+        flow = torch.from_numpy(flow_small).to(device).permute(2, 0, 1)[None]
+        confidence = torch.from_numpy(confidence_small).to(device)[None, None]
+        small_h, small_w = flow_small.shape[:2]
+        flow = F.interpolate(flow, size=(height, width), mode="bilinear", align_corners=False)
+        confidence = F.interpolate(
+            confidence, size=(height, width), mode="bilinear", align_corners=False
+        )
+        scale = torch.tensor(
+            [width / small_w, height / small_h], device=device, dtype=flow.dtype
+        ).view(1, 2, 1, 1)
+        coords = self._pixel_grid(height, width, device) + flow * scale
+        # Pixels that came from outside the frame have nothing to carry.
+        inside = (
+            (coords[:, 0] >= 0.0)
+            & (coords[:, 0] <= width - 1)
+            & (coords[:, 1] >= 0.0)
+            & (coords[:, 1] <= height - 1)
+        )[:, None]
+        grid = torch.stack(
+            (
+                coords[:, 0] * (2.0 / max(1, width - 1)) - 1.0,
+                coords[:, 1] * (2.0 / max(1, height - 1)) - 1.0,
+            ),
+            dim=-1,
+        )
+        warped = F.grid_sample(
+            detail.float(), grid, mode="bilinear", padding_mode="zeros", align_corners=True
+        )
+        return warped * (confidence * inside * float(amount))
+
+    def _pixel_grid(self, height: int, width: int, device):
+        key = (height, width, str(device))
+        grid = self._base.get(key)
+        if grid is None:
+            import torch
+
+            ys, xs = torch.meshgrid(
+                torch.arange(height, device=device, dtype=torch.float32),
+                torch.arange(width, device=device, dtype=torch.float32),
+                indexing="ij",
+            )
+            grid = torch.stack((xs, ys))[None]
+            self._base = {key: grid}
+        return grid
+
+    def _flow(self, current: np.ndarray):
+        """Backward flow and trust on a small copy: for each current pixel, where it was."""
+        height, width = current.shape[:2]
+        scale = max(1.0, max(width, height) / _FLOW_WIDTH)
+        small_w = max(8, int(round(width / scale)))
+        small_h = max(8, int(round(height / scale)))
+        prev_small = cv2.resize(
+            self.source, (small_w, small_h), interpolation=cv2.INTER_AREA
+        )
+        curr_small = cv2.resize(
+            current, (small_w, small_h), interpolation=cv2.INTER_AREA
+        )
+        if self._dis is None:
+            create = getattr(cv2, "DISOpticalFlow_create", None)
+            if create is None:
+                return None
+            self._dis = create(getattr(cv2, "DISOPTICAL_FLOW_PRESET_ULTRAFAST", 0))
+            if hasattr(self._dis, "setFinestScale"):
+                self._dis.setFinestScale(2)
+            if hasattr(self._dis, "setUseSpatialPropagation"):
+                self._dis.setUseSpatialPropagation(True)
+        flow = self._dis.calc(_gray_u8(curr_small), _gray_u8(prev_small), None)
+        grid_x, grid_y = self._grid(small_h, small_w)
+        warped_prev = cv2.remap(
+            prev_small[..., :3],
+            grid_x + flow[..., 0],
+            grid_y + flow[..., 1],
+            cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        error = np.mean(np.abs(warped_prev - curr_small[..., :3]), axis=2)
+        confidence = np.clip(1.0 - error / self._ERROR_LIMIT, 0.0, 1.0)
+        confidence = cv2.GaussianBlur(confidence.astype(np.float32), (0, 0), 1.0)
+        return np.ascontiguousarray(flow, dtype=np.float32), confidence
+
+    def _grid(self, height: int, width: int):
+        cached = self._grids.get((height, width))
+        if cached is None:
+            cached = tuple(
+                np.meshgrid(
+                    np.arange(width, dtype=np.float32),
+                    np.arange(height, dtype=np.float32),
+                )
+            )
+            self._grids[(height, width)] = cached
+        return cached
+
+
 def resize_rgb01(img01: np.ndarray, proc_width: int) -> np.ndarray:
     h, w = img01.shape[:2]
     if w <= proc_width:
@@ -269,6 +429,30 @@ class DreamControls:
     rotate: float = 0.0
     saturation: float = 1.2
     layer: str | None = None
+    # Neutral values are the original DeepDream step. The TouchDesigner panel
+    # sets its own defaults.
+    fourier_decay: float = 0.0
+    chroma: float = 1.0
+    coarse_boost: float = 0.0
+    octave_scale: float = 1.6
+    # Share of the previous dream carried onto the next frame (DreamMemory).
+    # 0 dreams every frame from the picture alone.
+    memory: float = 0.0
+    # Dream one pyramid level per frame, smallest to largest. Needs memory.
+    spread_levels: bool = False
+
+    def cost_signature(self) -> tuple:
+        """Settings that change the GPU work per frame or force a graph recapture."""
+        precondition = self.fourier_decay > 1e-4 or self.chroma < 1.0 - 1e-4
+        return (
+            self.layer,
+            int(self.iterations),
+            int(self.pyramid),
+            round(float(self.coarse_boost), 2),
+            round(float(self.octave_scale), 2),
+            precondition,
+            bool(self.spread_levels) and self.memory > 0.0 and self.feedback <= 0.0,
+        )
 
 
 class LiveDreamEngine:
@@ -276,7 +460,7 @@ class LiveDreamEngine:
 
     def __init__(
         self,
-        model_name: str = "vgg16",
+        model_name: str = "inception_v1",
         device: str | None = None,
         layers: list[str] | None = None,
     ):
@@ -299,6 +483,7 @@ class LiveDreamEngine:
         self.last_dream01: np.ndarray | None = None
         self.last_clean01: np.ndarray | None = None
         self._temporal = TemporalTracker()
+        self._memory = DreamMemory()
 
     def set_model(self, model_name: str, layer: str | None = None) -> None:
         if model_name not in BACKBONE_LAYERS:
@@ -328,6 +513,7 @@ class LiveDreamEngine:
         self.last_dream01 = None
         self.last_clean01 = None
         self._temporal.reset()
+        self._memory.reset()
         self._failed_config = None
 
     def load_model_now(self, layer: str) -> str | None:
@@ -428,6 +614,7 @@ class LiveDreamEngine:
             img01.shape[:2],
             max(1, controls.pyramid),
             max(1, controls.iterations),
+            controls.cost_signature(),
         )
         if self._failed_config == config:
             return img01
@@ -443,12 +630,34 @@ class LiveDreamEngine:
                     (1.0 - controls.feedback) * img01
                     + controls.feedback * previous_dream
                 )
+        # Feedback is the tunnel: it already feeds the whole previous dream
+        # back, so the memory only runs without it.
+        remember = controls.memory > 0.0 and controls.feedback <= 0.0
+        carried = None
+        levels = None
+        if remember:
+            keep = min(0.99, float(controls.memory))
+            pyramid = max(1, int(controls.pyramid))
+            if (
+                controls.spread_levels
+                and pyramid > 1
+                and self._memory.detail is not None
+            ):
+                # One level per frame. Each level is refreshed once per cycle,
+                # so the memory keeps `keep` per cycle, not per frame: decaying
+                # every frame made each level pulse and flicker. Measured at
+                # 512 px on InceptionV1, 4 levels: 2 iterations this way cost
+                # 6.8 ms against 10.2 ms for every level at 1 iteration, with
+                # the same strength and flicker.
+                levels = (self._memory.frame % pyramid,)
+                keep = keep ** (1.0 / pyramid)
+            carried = self._memory.carry(clean01, keep)
 
         try:
             dreamed01 = dreamer.dream_tensor(
                 img01,
                 pyramid_size=max(1, controls.pyramid),
-                pyramid_ratio=1.6,
+                pyramid_ratio=min(2.5, max(1.1, float(controls.octave_scale))),
                 num_iterations=max(1, controls.iterations),
                 lr=controls.lr,
                 intensity=controls.intensity,
@@ -458,6 +667,12 @@ class LiveDreamEngine:
                 # CUDA graph capture in TouchDesigner's process takes the
                 # whole application down. The isolated GPU process opts in.
                 use_cuda_graph=self.use_cuda_graph,
+                fourier_decay=max(0.0, float(controls.fourier_decay)),
+                chroma=min(1.0, max(0.0, float(controls.chroma))),
+                coarse_boost=max(0.0, float(controls.coarse_boost)),
+                carry=carried,
+                levels=levels,
+                keep_detail=remember,
             )
         except Exception as exc:
             self._failed_config = config
@@ -477,6 +692,11 @@ class LiveDreamEngine:
                     f"Processing disabled for the current settings: {exc}"
                 )
             return img01
+
+        if remember:
+            self._memory.remember(dreamer.last_detail, clean01)
+        else:
+            self._memory.reset()
 
         if (
             controls.blend > 0.0
@@ -529,7 +749,7 @@ class AsyncLiveDreamEngine:
 
     def __init__(
         self,
-        model_name: str = "vgg16",
+        model_name: str = "inception_v1",
         device: str | None = None,
         layers: list[str] | None = None,
     ):
@@ -753,20 +973,18 @@ class AsyncLiveDreamEngine:
     def _prepare_submit(self, img01, controls, proc_width):
         resized = resize_rgb01(img01, proc_width)
         frame = np.ascontiguousarray(resized, dtype=np.float32).copy()
-        signature = (
-            self._requested_model,
-            controls.layer,
-            int(controls.iterations),
-            int(controls.pyramid),
-            frame.shape,
-        )
+        self._note_cost(controls, frame.shape)
+        reset = self._reset_requested
+        self._reset_requested = False
+        return resized, frame, reset
+
+    def _note_cost(self, controls: DreamControls, shape) -> None:
+        """Restart the dream fps average when the work per frame changes."""
+        signature = (self._requested_model, controls.cost_signature(), shape)
         if signature != self._fps_signature:
             self._fps_signature = signature
             self._fps_ready = False
             self.dream_fps = 0.0
-        reset = self._reset_requested
-        self._reset_requested = False
-        return resized, frame, reset
 
     def _process_isolated_sync(
         self,
@@ -963,17 +1181,7 @@ class AsyncLiveDreamEngine:
         resized = resize_rgb01(img01, proc_width)
         if not self._bridge.busy():
             frame = np.ascontiguousarray(resized, dtype=np.float32).copy()
-            signature = (
-                self._requested_model,
-                controls.layer,
-                int(controls.iterations),
-                int(controls.pyramid),
-                frame.shape,
-            )
-            if signature != self._fps_signature:
-                self._fps_signature = signature
-                self._fps_ready = False
-                self.dream_fps = 0.0
+            self._note_cost(controls, frame.shape)
             reset = self._reset_requested
             self._reset_requested = False
             self._bridge.submit(
